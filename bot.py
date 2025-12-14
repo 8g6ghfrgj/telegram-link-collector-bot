@@ -1,7 +1,6 @@
 # bot.py
 import os
 import tempfile
-from datetime import datetime
 
 from telegram import (
     Update,
@@ -26,13 +25,10 @@ from file_extractors import (
 )
 
 # ==================================================
-# تهيئة قاعدة البيانات
+# إعدادات عامة
 # ==================================================
 db = Database()
 
-# ==================================================
-# التصنيفات
-# ==================================================
 CATEGORIES = {
     "whatsapp": "📱 واتساب",
     "telegram": "✈️ تليجرام",
@@ -45,17 +41,17 @@ CATEGORIES = {
 PAGE_SIZE = 30
 
 # ==================================================
-# لوحات المفاتيح
+# Keyboards
 # ==================================================
 def main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")],
+        [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")]
     ])
 
 
-def back_keyboard(callback="back"):
+def back_keyboard(cb="back"):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ رجوع", callback_data=callback)]
+        [InlineKeyboardButton("⬅️ رجوع", callback_data=cb)]
     ])
 
 # ==================================================
@@ -67,7 +63,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🤖 **بوت تجميع الروابط**\n\n"
-        "• يجمع كل الروابط تلقائياً بدون أي استثناء\n"
+        "• يجمع كل الروابط تلقائياً\n"
         "• من الرسائل، الأزرار، PDF، Word\n"
         "• بدون تكرار\n\n"
         "اختر من القائمة:",
@@ -76,7 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==================================================
-# Callback Queries (الواجهة)
+# Callbacks
 # ==================================================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -87,18 +83,18 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # --------------------------
-    # رجوع للقائمة الرئيسية
-    # --------------------------
+    # -------------------------
+    # رجوع رئيسي
+    # -------------------------
     if data == "back":
         await query.edit_message_text(
             "القائمة الرئيسية:",
             reply_markup=main_keyboard()
         )
 
-    # --------------------------
+    # -------------------------
     # عرض التصنيفات
-    # --------------------------
+    # -------------------------
     elif data == "view_links":
         buttons = [
             [InlineKeyboardButton(name, callback_data=f"cat:{key}")]
@@ -111,9 +107,9 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # --------------------------
+    # -------------------------
     # عرض السنوات
-    # --------------------------
+    # -------------------------
     elif data.startswith("cat:"):
         category = data.split(":")[1]
         years = db.get_years()
@@ -133,39 +129,39 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # --------------------------
-    # عرض الروابط مع Pagination
-    # --------------------------
+    # -------------------------
+    # عرض الروابط + عدّاد + Pagination
+    # -------------------------
     elif data.startswith("year:"):
         _, category, year, offset = data.split(":")
         year = int(year)
         offset = int(offset)
 
-        links = db.get_links_paginated(
-            category=category,
-            year=year,
-            limit=PAGE_SIZE,
-            offset=offset
-        )
+        total = db.count_links(category, year)
+        links = db.get_links_paginated(category, year, PAGE_SIZE, offset)
 
         if not links:
             await query.answer("لا توجد روابط", show_alert=True)
             return
 
-        text = f"{CATEGORIES[category]} — {year}\n\n"
+        text = (
+            f"{CATEGORIES[category]} — {year}\n"
+            f"عرض {min(offset + PAGE_SIZE, total)} من {total} رابط\n\n"
+        )
+
         for i, link in enumerate(links, start=offset + 1):
             text += f"{i}. {link}\n"
 
-        nav_buttons = []
+        nav = []
         if offset > 0:
-            nav_buttons.append(
+            nav.append(
                 InlineKeyboardButton(
                     "⏮ السابق",
                     callback_data=f"year:{category}:{year}:{offset-PAGE_SIZE}"
                 )
             )
-        if len(links) == PAGE_SIZE:
-            nav_buttons.append(
+        if offset + PAGE_SIZE < total:
+            nav.append(
                 InlineKeyboardButton(
                     "⏭ التالي",
                     callback_data=f"year:{category}:{year}:{offset+PAGE_SIZE}"
@@ -173,9 +169,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         keyboard = []
-        if nav_buttons:
-            keyboard.append(nav_buttons)
+        if nav:
+            keyboard.append(nav)
 
+        keyboard.append([
+            InlineKeyboardButton("🔄 تحديث", callback_data=f"year:{category}:{year}:{offset}")
+        ])
         keyboard.append([
             InlineKeyboardButton("⬅️ رجوع", callback_data=f"cat:{category}")
         ])
@@ -186,73 +185,56 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ==================================================
-# جامع الروابط (تلقائي دائماً)
+# جامع الروابط (تلقائي)
 # ==================================================
 async def collect_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     urls = set()
 
-    # --------------------------
-    # النص والكابتشن
-    # --------------------------
+    # نص وكابتشن
     if message.text:
         urls.update(extract_links_from_text(message.text))
-
     if message.caption:
         urls.update(extract_links_from_text(message.caption))
 
-    # --------------------------
-    # الروابط المخفية (Entities)
-    # --------------------------
-    if message.entities:
-        for ent in message.entities:
-            if ent.type == "text_link":
-                urls.add(ent.url)
+    # روابط مخفية
+    for ent in (message.entities or []):
+        if ent.type == "text_link":
+            urls.add(ent.url)
+    for ent in (message.caption_entities or []):
+        if ent.type == "text_link":
+            urls.add(ent.url)
 
-    if message.caption_entities:
-        for ent in message.caption_entities:
-            if ent.type == "text_link":
-                urls.add(ent.url)
-
-    # --------------------------
-    # أزرار Inline
-    # --------------------------
+    # أزرار
     if message.reply_markup:
         for row in message.reply_markup.inline_keyboard:
             for btn in row:
                 if btn.url:
                     urls.add(btn.url)
 
-    # --------------------------
-    # ملفات PDF و Word
-    # --------------------------
+    # ملفات PDF / Word
     if message.document:
-        file_name = message.document.file_name.lower()
-        file_size = message.document.file_size or 0
+        name = message.document.file_name.lower()
+        size = message.document.file_size or 0
 
-        # حد أمان 10MB
-        if file_size <= 10 * 1024 * 1024:
+        if size <= 10 * 1024 * 1024:
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tg_file = await context.bot.get_file(message.document.file_id)
-                await tg_file.download_to_drive(tmp.name)
+                file = await context.bot.get_file(message.document.file_id)
+                await file.download_to_drive(tmp.name)
 
-                if file_name.endswith(".pdf"):
+                if name.endswith(".pdf"):
                     urls.update(extract_links_from_pdf(tmp.name))
-
-                elif file_name.endswith(".docx"):
+                elif name.endswith(".docx"):
                     urls.update(extract_links_from_docx(tmp.name))
 
                 os.unlink(tmp.name)
 
-    # --------------------------
-    # حفظ الروابط بدون تكرار
-    # --------------------------
+    # حفظ
     for url in urls:
-        category = classify_link(url)
-        db.add_link(url, category)
+        db.add_link(url, classify_link(url))
 
 # ==================================================
-# تشغيل البوت
+# تشغيل
 # ==================================================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
