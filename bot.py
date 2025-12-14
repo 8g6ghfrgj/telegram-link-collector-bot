@@ -6,7 +6,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputFile,
 )
 from telegram.ext import (
     Application,
@@ -19,12 +18,21 @@ from telegram.ext import (
 
 from config import BOT_TOKEN, ADMIN_ID
 from database import Database
+from sessions_db import SessionsDB
+from session_manager import save_uploaded_session
+
 from link_utils import extract_links_from_text, classify_link
 from file_extractors import extract_links_from_pdf, extract_links_from_docx
 
 # ==================================================
+# قواعد البيانات
+# ==================================================
 db = Database()
+sessions_db = SessionsDB()
 
+# ==================================================
+# إعدادات
+# ==================================================
 CATEGORIES = {
     "whatsapp": "📱 واتساب",
     "telegram": "✈️ تليجرام",
@@ -37,169 +45,262 @@ CATEGORIES = {
 PAGE_SIZE = 30
 
 # ==================================================
+# لوحات المفاتيح
+# ==================================================
 def main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")],
-        [InlineKeyboardButton("🔍 بحث", callback_data="search")],
+        [InlineKeyboardButton("➕ إضافة جلسة", callback_data="add_session")],
+        [InlineKeyboardButton("👤 عرض الجلسات", callback_data="list_sessions")],
+        [InlineKeyboardButton("🔗 تجميع الروابط", callback_data="start_collect")],
+        [InlineKeyboardButton("📊 عرض الروابط المجمعة", callback_data="view_links")],
     ])
 
+
+def back_keyboard(cb="back"):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ رجوع", callback_data=cb)]
+    ])
+
+# ==================================================
+# /start
 # ==================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     await update.message.reply_text(
-        "🤖 **بوت أرشفة الروابط**\n\n"
-        "• تجميع تلقائي\n"
-        "• عرض – بحث – تصدير\n\n"
-        "اختر:",
+        "🤖 **بوت إدارة الجلسات وتجميع الروابط**\n\n"
+        "اختر من القائمة:",
         reply_markup=main_keyboard(),
         parse_mode="Markdown"
     )
 
 # ==================================================
+# Callbacks (الأزرار)
+# ==================================================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.from_user.id != ADMIN_ID:
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
         return
 
-    d = q.data
+    data = query.data
 
-    if d == "back":
-        await q.edit_message_text("القائمة:", reply_markup=main_keyboard())
+    # ------------------ رجوع ------------------
+    if data == "back":
+        await query.edit_message_text(
+            "القائمة الرئيسية:",
+            reply_markup=main_keyboard()
+        )
 
-    elif d == "view_links":
-        kb = [[InlineKeyboardButton(v, callback_data=f"cat:{k}")]
-              for k, v in CATEGORIES.items()]
-        kb.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back")])
-        await q.edit_message_text("اختر النوع:", reply_markup=InlineKeyboardMarkup(kb))
+    # ------------------ إضافة جلسة ------------------
+    elif data == "add_session":
+        kb = [
+            [InlineKeyboardButton("📂 رفع جلسة Telethon", callback_data="upload_session")],
+            [InlineKeyboardButton("📱 إدخال رقم (قريباً)", callback_data="otp_disabled")],
+            [InlineKeyboardButton("⬅️ رجوع", callback_data="back")]
+        ]
+        await query.edit_message_text(
+            "اختر طريقة إضافة الجلسة:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
-    elif d.startswith("cat:"):
-        cat = d.split(":")[1]
+    elif data == "otp_disabled":
+        await query.answer(
+            "تسجيل الرقم يتطلب API_ID و API_HASH",
+            show_alert=True
+        )
+
+    # ------------------ عرض الجلسات ------------------
+    elif data == "list_sessions":
+        sessions = sessions_db.get_sessions()
+
+        if not sessions:
+            await query.edit_message_text(
+                "❌ لا توجد جلسات مضافة.",
+                reply_markup=main_keyboard()
+            )
+            return
+
+        text = "👤 **الجلسات المضافة:**\n\n"
+        for i, (phone, name) in enumerate(sessions, 1):
+            text += f"{i}. `{name}` ({phone})\n"
+
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+
+    # ------------------ تجميع الروابط ------------------
+    elif data == "start_collect":
+        await query.edit_message_text(
+            "🔗 **تجميع الروابط يعمل تلقائياً**\n\n"
+            "أي رابط يظهر في الحسابات سيتم حفظه بدون تكرار.",
+            reply_markup=main_keyboard(),
+            parse_mode="Markdown"
+        )
+
+    # ------------------ عرض الروابط ------------------
+    elif data == "view_links":
+        buttons = [
+            [InlineKeyboardButton(name, callback_data=f"cat:{key}")]
+            for key, name in CATEGORIES.items()
+        ]
+        buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back")])
+
+        await query.edit_message_text(
+            "اختر نوع الروابط:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data.startswith("cat:"):
+        category = data.split(":")[1]
         years = db.get_years()
-        kb = [[InlineKeyboardButton(str(y), callback_data=f"year:{cat}:{y}:0")] for y in years]
-        kb.append([InlineKeyboardButton("⬅️ رجوع", callback_data="view_links")])
-        await q.edit_message_text("اختر السنة:", reply_markup=InlineKeyboardMarkup(kb))
 
-    elif d.startswith("year:"):
-        _, cat, year, offset = d.split(":")
-        year, offset = int(year), int(offset)
+        if not years:
+            await query.answer("لا توجد روابط بعد", show_alert=True)
+            return
 
-        total = db.count_links(cat, year)
-        links = db.get_links_paginated(cat, year, PAGE_SIZE, offset)
+        buttons = [
+            [InlineKeyboardButton(str(y), callback_data=f"year:{category}:{y}:0")]
+            for y in years
+        ]
+        buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="view_links")])
 
-        text = f"{CATEGORIES[cat]} — {year}\n"
-        text += f"عرض {min(offset+PAGE_SIZE, total)} من {total}\n\n"
+        await query.edit_message_text(
+            f"اختر السنة ({CATEGORIES[category]}):",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
-        for i, l in enumerate(links, start=offset+1):
-            text += f"{i}. {l}\n"
+    elif data.startswith("year:"):
+        _, category, year, offset = data.split(":")
+        year = int(year)
+        offset = int(offset)
+
+        total = db.count_links(category, year)
+        links = db.get_links_paginated(category, year, PAGE_SIZE, offset)
+
+        if not links:
+            await query.answer("لا توجد روابط", show_alert=True)
+            return
+
+        text = (
+            f"{CATEGORIES[category]} — {year}\n"
+            f"عرض {min(offset + PAGE_SIZE, total)} من {total} رابط\n\n"
+        )
+
+        for i, link in enumerate(links, start=offset + 1):
+            text += f"{i}. {link}\n"
 
         nav = []
         if offset > 0:
-            nav.append(InlineKeyboardButton("⏮", callback_data=f"year:{cat}:{year}:{offset-PAGE_SIZE}"))
+            nav.append(
+                InlineKeyboardButton(
+                    "⏮ السابق",
+                    callback_data=f"year:{category}:{year}:{offset-PAGE_SIZE}"
+                )
+            )
         if offset + PAGE_SIZE < total:
-            nav.append(InlineKeyboardButton("⏭", callback_data=f"year:{cat}:{year}:{offset+PAGE_SIZE}"))
+            nav.append(
+                InlineKeyboardButton(
+                    "⏭ التالي",
+                    callback_data=f"year:{category}:{year}:{offset+PAGE_SIZE}"
+                )
+            )
 
-        kb = []
+        keyboard = []
         if nav:
-            kb.append(nav)
+            keyboard.append(nav)
 
-        kb.append([
-            InlineKeyboardButton("📤 تصدير", callback_data=f"export:{cat}:{year}"),
-            InlineKeyboardButton("⬅️ رجوع", callback_data=f"cat:{cat}")
+        keyboard.append([
+            InlineKeyboardButton("⬅️ رجوع", callback_data=f"cat:{category}")
         ])
 
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-
-    elif d.startswith("export:"):
-        _, cat, year = d.split(":")
-        year = int(year)
-
-        links = db.export_links(cat, year)
-
-        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
-            for l in links:
-                f.write(l + "\n")
-
-        await q.message.reply_document(
-            document=InputFile(f.name),
-            caption=f"📤 تصدير {CATEGORIES[cat]} — {year}"
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        os.unlink(f.name)
-
-    elif d == "search":
-        context.user_data["search"] = True
-        await q.edit_message_text("✍️ أرسل كلمة البحث:")
 
 # ==================================================
-async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("search"):
+# رفع جلسة Telethon
+# ==================================================
+async def handle_session_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
         return
 
-    keyword = update.message.text
-    context.user_data["search"] = False
-
-    results = db.search_links(keyword)
-
-    if not results:
-        await update.message.reply_text("❌ لا نتائج")
+    if not update.message.document:
         return
 
-    text = f"🔍 نتائج البحث ({len(results)}):\n\n"
-    for i, r in enumerate(results, 1):
-        text += f"{i}. {r}\n"
+    doc = update.message.document
+    if not doc.file_name.endswith(".session"):
+        await update.message.reply_text("❌ أرسل ملف .session فقط")
+        return
 
-    await update.message.reply_text(text)
+    tg_file = await context.bot.get_file(doc.file_id)
+    temp_path = os.path.join(tempfile.gettempdir(), doc.file_name)
+    await tg_file.download_to_drive(temp_path)
 
+    name = save_uploaded_session(temp_path, doc.file_name)
+    await update.message.reply_text(f"✅ تم إضافة الجلسة: `{name}`", parse_mode="Markdown")
+
+# ==================================================
+# جامع الروابط (من البوت نفسه حالياً)
 # ==================================================
 async def collect_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
+    message = update.effective_message
     urls = set()
 
-    if msg.text:
-        urls.update(extract_links_from_text(msg.text))
-    if msg.caption:
-        urls.update(extract_links_from_text(msg.caption))
+    if message.text:
+        urls.update(extract_links_from_text(message.text))
+    if message.caption:
+        urls.update(extract_links_from_text(message.caption))
 
-    for e in (msg.entities or []):
-        if e.type == "text_link":
-            urls.add(e.url)
-    for e in (msg.caption_entities or []):
-        if e.type == "text_link":
-            urls.add(e.url)
+    for ent in (message.entities or []):
+        if ent.type == "text_link":
+            urls.add(ent.url)
+    for ent in (message.caption_entities or []):
+        if ent.type == "text_link":
+            urls.add(ent.url)
 
-    if msg.reply_markup:
-        for row in msg.reply_markup.inline_keyboard:
-            for b in row:
-                if b.url:
-                    urls.add(b.url)
+    if message.reply_markup:
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url:
+                    urls.add(btn.url)
 
-    if msg.document:
-        name = msg.document.file_name.lower()
-        if msg.document.file_size <= 10 * 1024 * 1024:
+    if message.document:
+        name = message.document.file_name.lower()
+        size = message.document.file_size or 0
+
+        if size <= 10 * 1024 * 1024:
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                f = await context.bot.get_file(msg.document.file_id)
+                f = await context.bot.get_file(message.document.file_id)
                 await f.download_to_drive(tmp.name)
+
                 if name.endswith(".pdf"):
                     urls.update(extract_links_from_pdf(tmp.name))
                 elif name.endswith(".docx"):
                     urls.update(extract_links_from_docx(tmp.name))
+
                 os.unlink(tmp.name)
 
-    for u in urls:
-        db.add_link(u, classify_link(u))
+    for url in urls:
+        db.add_link(url, classify_link(url))
 
+# ==================================================
+# تشغيل البوت
 # ==================================================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callbacks))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_session_upload))
     app.add_handler(MessageHandler(filters.ALL, collect_links))
 
-    print("🚀 Bot fully ready (Stage 3)")
+    print("🚀 Bot is running with sessions + link collection")
     app.run_polling()
 
 
