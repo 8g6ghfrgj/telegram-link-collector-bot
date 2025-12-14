@@ -6,6 +6,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputFile,
 )
 from telegram.ext import (
     Application,
@@ -19,13 +20,8 @@ from telegram.ext import (
 from config import BOT_TOKEN, ADMIN_ID
 from database import Database
 from link_utils import extract_links_from_text, classify_link
-from file_extractors import (
-    extract_links_from_pdf,
-    extract_links_from_docx,
-)
+from file_extractors import extract_links_from_pdf, extract_links_from_docx
 
-# ==================================================
-# إعدادات عامة
 # ==================================================
 db = Database()
 
@@ -41,209 +37,169 @@ CATEGORIES = {
 PAGE_SIZE = 30
 
 # ==================================================
-# Keyboards
-# ==================================================
 def main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")]
+        [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")],
+        [InlineKeyboardButton("🔍 بحث", callback_data="search")],
     ])
 
-
-def back_keyboard(cb="back"):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ رجوع", callback_data=cb)]
-    ])
-
-# ==================================================
-# /start
 # ==================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     await update.message.reply_text(
-        "🤖 **بوت تجميع الروابط**\n\n"
-        "• يجمع كل الروابط تلقائياً\n"
-        "• من الرسائل، الأزرار، PDF، Word\n"
-        "• بدون تكرار\n\n"
-        "اختر من القائمة:",
+        "🤖 **بوت أرشفة الروابط**\n\n"
+        "• تجميع تلقائي\n"
+        "• عرض – بحث – تصدير\n\n"
+        "اختر:",
         reply_markup=main_keyboard(),
         parse_mode="Markdown"
     )
 
 # ==================================================
-# Callbacks
-# ==================================================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id != ADMIN_ID:
+    q = update.callback_query
+    await q.answer()
+    if q.from_user.id != ADMIN_ID:
         return
 
-    data = query.data
+    d = q.data
 
-    # -------------------------
-    # رجوع رئيسي
-    # -------------------------
-    if data == "back":
-        await query.edit_message_text(
-            "القائمة الرئيسية:",
-            reply_markup=main_keyboard()
-        )
+    if d == "back":
+        await q.edit_message_text("القائمة:", reply_markup=main_keyboard())
 
-    # -------------------------
-    # عرض التصنيفات
-    # -------------------------
-    elif data == "view_links":
-        buttons = [
-            [InlineKeyboardButton(name, callback_data=f"cat:{key}")]
-            for key, name in CATEGORIES.items()
-        ]
-        buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back")])
+    elif d == "view_links":
+        kb = [[InlineKeyboardButton(v, callback_data=f"cat:{k}")]
+              for k, v in CATEGORIES.items()]
+        kb.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back")])
+        await q.edit_message_text("اختر النوع:", reply_markup=InlineKeyboardMarkup(kb))
 
-        await query.edit_message_text(
-            "اختر نوع الروابط:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    # -------------------------
-    # عرض السنوات
-    # -------------------------
-    elif data.startswith("cat:"):
-        category = data.split(":")[1]
+    elif d.startswith("cat:"):
+        cat = d.split(":")[1]
         years = db.get_years()
+        kb = [[InlineKeyboardButton(str(y), callback_data=f"year:{cat}:{y}:0")] for y in years]
+        kb.append([InlineKeyboardButton("⬅️ رجوع", callback_data="view_links")])
+        await q.edit_message_text("اختر السنة:", reply_markup=InlineKeyboardMarkup(kb))
 
-        if not years:
-            await query.answer("لا توجد روابط بعد", show_alert=True)
-            return
+    elif d.startswith("year:"):
+        _, cat, year, offset = d.split(":")
+        year, offset = int(year), int(offset)
 
-        buttons = [
-            [InlineKeyboardButton(str(y), callback_data=f"year:{category}:{y}:0")]
-            for y in years
-        ]
-        buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="view_links")])
+        total = db.count_links(cat, year)
+        links = db.get_links_paginated(cat, year, PAGE_SIZE, offset)
 
-        await query.edit_message_text(
-            f"اختر السنة ({CATEGORIES[category]}):",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        text = f"{CATEGORIES[cat]} — {year}\n"
+        text += f"عرض {min(offset+PAGE_SIZE, total)} من {total}\n\n"
 
-    # -------------------------
-    # عرض الروابط + عدّاد + Pagination
-    # -------------------------
-    elif data.startswith("year:"):
-        _, category, year, offset = data.split(":")
-        year = int(year)
-        offset = int(offset)
-
-        total = db.count_links(category, year)
-        links = db.get_links_paginated(category, year, PAGE_SIZE, offset)
-
-        if not links:
-            await query.answer("لا توجد روابط", show_alert=True)
-            return
-
-        text = (
-            f"{CATEGORIES[category]} — {year}\n"
-            f"عرض {min(offset + PAGE_SIZE, total)} من {total} رابط\n\n"
-        )
-
-        for i, link in enumerate(links, start=offset + 1):
-            text += f"{i}. {link}\n"
+        for i, l in enumerate(links, start=offset+1):
+            text += f"{i}. {l}\n"
 
         nav = []
         if offset > 0:
-            nav.append(
-                InlineKeyboardButton(
-                    "⏮ السابق",
-                    callback_data=f"year:{category}:{year}:{offset-PAGE_SIZE}"
-                )
-            )
+            nav.append(InlineKeyboardButton("⏮", callback_data=f"year:{cat}:{year}:{offset-PAGE_SIZE}"))
         if offset + PAGE_SIZE < total:
-            nav.append(
-                InlineKeyboardButton(
-                    "⏭ التالي",
-                    callback_data=f"year:{category}:{year}:{offset+PAGE_SIZE}"
-                )
-            )
+            nav.append(InlineKeyboardButton("⏭", callback_data=f"year:{cat}:{year}:{offset+PAGE_SIZE}"))
 
-        keyboard = []
+        kb = []
         if nav:
-            keyboard.append(nav)
+            kb.append(nav)
 
-        keyboard.append([
-            InlineKeyboardButton("🔄 تحديث", callback_data=f"year:{category}:{year}:{offset}")
-        ])
-        keyboard.append([
-            InlineKeyboardButton("⬅️ رجوع", callback_data=f"cat:{category}")
+        kb.append([
+            InlineKeyboardButton("📤 تصدير", callback_data=f"export:{cat}:{year}"),
+            InlineKeyboardButton("⬅️ رجوع", callback_data=f"cat:{cat}")
         ])
 
-        await query.edit_message_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d.startswith("export:"):
+        _, cat, year = d.split(":")
+        year = int(year)
+
+        links = db.export_links(cat, year)
+
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
+            for l in links:
+                f.write(l + "\n")
+
+        await q.message.reply_document(
+            document=InputFile(f.name),
+            caption=f"📤 تصدير {CATEGORIES[cat]} — {year}"
         )
+        os.unlink(f.name)
+
+    elif d == "search":
+        context.user_data["search"] = True
+        await q.edit_message_text("✍️ أرسل كلمة البحث:")
 
 # ==================================================
-# جامع الروابط (تلقائي)
+async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("search"):
+        return
+
+    keyword = update.message.text
+    context.user_data["search"] = False
+
+    results = db.search_links(keyword)
+
+    if not results:
+        await update.message.reply_text("❌ لا نتائج")
+        return
+
+    text = f"🔍 نتائج البحث ({len(results)}):\n\n"
+    for i, r in enumerate(results, 1):
+        text += f"{i}. {r}\n"
+
+    await update.message.reply_text(text)
+
 # ==================================================
 async def collect_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
+    msg = update.effective_message
     urls = set()
 
-    # نص وكابتشن
-    if message.text:
-        urls.update(extract_links_from_text(message.text))
-    if message.caption:
-        urls.update(extract_links_from_text(message.caption))
+    if msg.text:
+        urls.update(extract_links_from_text(msg.text))
+    if msg.caption:
+        urls.update(extract_links_from_text(msg.caption))
 
-    # روابط مخفية
-    for ent in (message.entities or []):
-        if ent.type == "text_link":
-            urls.add(ent.url)
-    for ent in (message.caption_entities or []):
-        if ent.type == "text_link":
-            urls.add(ent.url)
+    for e in (msg.entities or []):
+        if e.type == "text_link":
+            urls.add(e.url)
+    for e in (msg.caption_entities or []):
+        if e.type == "text_link":
+            urls.add(e.url)
 
-    # أزرار
-    if message.reply_markup:
-        for row in message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.url:
-                    urls.add(btn.url)
+    if msg.reply_markup:
+        for row in msg.reply_markup.inline_keyboard:
+            for b in row:
+                if b.url:
+                    urls.add(b.url)
 
-    # ملفات PDF / Word
-    if message.document:
-        name = message.document.file_name.lower()
-        size = message.document.file_size or 0
-
-        if size <= 10 * 1024 * 1024:
+    if msg.document:
+        name = msg.document.file_name.lower()
+        if msg.document.file_size <= 10 * 1024 * 1024:
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                file = await context.bot.get_file(message.document.file_id)
-                await file.download_to_drive(tmp.name)
-
+                f = await context.bot.get_file(msg.document.file_id)
+                await f.download_to_drive(tmp.name)
                 if name.endswith(".pdf"):
                     urls.update(extract_links_from_pdf(tmp.name))
                 elif name.endswith(".docx"):
                     urls.update(extract_links_from_docx(tmp.name))
-
                 os.unlink(tmp.name)
 
-    # حفظ
-    for url in urls:
-        db.add_link(url, classify_link(url))
+    for u in urls:
+        db.add_link(u, classify_link(u))
 
-# ==================================================
-# تشغيل
 # ==================================================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
     app.add_handler(MessageHandler(filters.ALL, collect_links))
 
-    print("🚀 Bot is running and collecting links...")
+    print("🚀 Bot fully ready (Stage 3)")
     app.run_polling()
 
 
