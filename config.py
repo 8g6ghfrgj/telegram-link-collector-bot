@@ -1,5 +1,8 @@
 # config.py
-import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
+ADMIN_ID = 123456789
+
+# API اختياري
+API_ID = None
+API_HASH = None
