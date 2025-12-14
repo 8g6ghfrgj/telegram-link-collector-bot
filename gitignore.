@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Database
+links.db
+
+# Telethon
+*.session
+
+# Environment
+.env
