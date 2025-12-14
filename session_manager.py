@@ -1,46 +1,81 @@
 # session_manager.py
 import os
+import sqlite3
 from telethon import TelegramClient
-from sessions_db import SessionsDB
+from telethon.sessions import StringSession
 
 SESSIONS_DIR = "sessions"
+DB_PATH = "sessions.db"
+
 os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+
+class SessionsDB:
+    def __init__(self):
+        self.conn = sqlite3.connect(DB_PATH)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT,
+                session_file TEXT UNIQUE
+            )
+        """)
+        self.conn.commit()
+
+    def add(self, phone, session_file):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sessions (phone, session_file) VALUES (?, ?)",
+            (phone, session_file)
+        )
+        self.conn.commit()
+
+    def delete(self, session_file):
+        self.conn.execute(
+            "DELETE FROM sessions WHERE session_file = ?",
+            (session_file,)
+        )
+        self.conn.commit()
+
+    def all(self):
+        cur = self.conn.cursor()
+        cur.execute("SELECT phone, session_file FROM sessions")
+        return cur.fetchall()
+
 
 sessions_db = SessionsDB()
 
 
-def save_uploaded_session(file_path: str, original_name: str):
-    """
-    حفظ ملف session مرفوع
-    """
-    session_name = original_name.replace(".session", "")
-    target = os.path.join(SESSIONS_DIR, original_name)
-
-    os.replace(file_path, target)
-
-    sessions_db.add_session(
-        phone="uploaded",
-        session_name=session_name
-    )
-
-    return session_name
+# ===============================
+# إضافة جلسة من StringSession
+# ===============================
+def add_string_session(string_session, phone="manual"):
+    path = os.path.join(SESSIONS_DIR, f"{phone}.session")
+    with open(path, "w") as f:
+        f.write(string_session)
+    sessions_db.add(phone, path)
 
 
-def load_all_clients(api_id=None, api_hash=None):
-    """
-    تحميل كل الجلسات الموجودة
-    """
+# ===============================
+# تحميل كل الجلسات
+# ===============================
+def load_all_clients(api_id, api_hash):
     clients = []
-
-    for _, session_name in sessions_db.get_sessions():
-        try:
-            client = TelegramClient(
-                os.path.join(SESSIONS_DIR, session_name),
-                api_id,
-                api_hash
-            )
-            clients.append(client)
-        except:
+    for phone, session_file in sessions_db.all():
+        if not os.path.exists(session_file):
             continue
 
+        with open(session_file) as f:
+            string = f.read().strip()
+
+        client = TelegramClient(
+            StringSession(string),
+            api_id,
+            api_hash
+        )
+        clients.append(client)
+
     return clients
+
+
+def get_sessions_count():
+    return len(sessions_db.all())
