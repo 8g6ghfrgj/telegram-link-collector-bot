@@ -1,8 +1,6 @@
 # session_manager.py
 import os
 import sqlite3
-from telethon import TelegramClient
-from telethon.sessions import StringSession
 
 SESSIONS_DIR = "sessions"
 DB_PATH = "sessions.db"
@@ -12,69 +10,52 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 class SessionsDB:
     def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH)
-        self.conn.execute("""
+        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self.cursor = self.conn.cursor()
+        self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT,
-                session_file TEXT UNIQUE
+                session_name TEXT UNIQUE
             )
         """)
         self.conn.commit()
 
-    def add(self, phone, session_file):
-        self.conn.execute(
-            "INSERT OR IGNORE INTO sessions (phone, session_file) VALUES (?, ?)",
-            (phone, session_file)
+    def add(self, phone, session_name):
+        self.cursor.execute(
+            "INSERT OR IGNORE INTO sessions (phone, session_name) VALUES (?, ?)",
+            (phone, session_name)
         )
         self.conn.commit()
 
-    def delete(self, session_file):
-        self.conn.execute(
-            "DELETE FROM sessions WHERE session_file = ?",
-            (session_file,)
+    def delete(self, session_name):
+        self.cursor.execute(
+            "DELETE FROM sessions WHERE session_name = ?",
+            (session_name,)
         )
         self.conn.commit()
 
     def all(self):
-        cur = self.conn.cursor()
-        cur.execute("SELECT phone, session_file FROM sessions")
-        return cur.fetchall()
+        self.cursor.execute(
+            "SELECT phone, session_name FROM sessions ORDER BY id DESC"
+        )
+        return self.cursor.fetchall()
 
 
 sessions_db = SessionsDB()
 
 
-# ===============================
-# إضافة جلسة من StringSession
-# ===============================
-def add_string_session(string_session, phone="manual"):
-    path = os.path.join(SESSIONS_DIR, f"{phone}.session")
-    with open(path, "w") as f:
-        f.write(string_session)
-    sessions_db.add(phone, path)
+def save_uploaded_session(temp_path: str, filename: str):
+    """
+    حفظ ملف session مرفوع
+    """
+    session_name = filename.replace(".session", "")
+    target = os.path.join(SESSIONS_DIR, filename)
 
+    os.replace(temp_path, target)
 
-# ===============================
-# تحميل كل الجلسات
-# ===============================
-def load_all_clients(api_id, api_hash):
-    clients = []
-    for phone, session_file in sessions_db.all():
-        if not os.path.exists(session_file):
-            continue
-
-        with open(session_file) as f:
-            string = f.read().strip()
-
-        client = TelegramClient(
-            StringSession(string),
-            api_id,
-            api_hash
-        )
-        clients.append(client)
-
-    return clients
+    sessions_db.add("uploaded", session_name)
+    return session_name
 
 
 def get_sessions_count():
