@@ -1,4 +1,5 @@
-python-telegram-bot==13.15  # ⬅️ إصدار أقدم وثابت
+python-telegram-bot==13.15
 telethon==1.34.0
 aiohttp==3.9.3
-standard-imghdr>=3.13.0
+standard-imghdr>=3.13.0  # لمعالجة الخطأ السابق
+urllib3<2  # لإضافة التبعية المفقودة وتجنب مشاكل التوافق[citation:3]
