@@ -2,11 +2,7 @@
 import os
 import asyncio
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,27 +13,22 @@ from telegram.ext import (
 )
 
 from database import Database
+from session_manager import SessionManager
 from collector import start_collector
-from session_manager import (
-    add_session_string,
-    sessions_db,
-    sessions_count,
-)
 
-# =============================
-# إعدادات من Render (ENV)
-# =============================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+# ==============================
+# الإعدادات من Render
+# ==============================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN غير موجود في Environment Variables")
-
-# =============================
 db = Database()
+sessions = SessionManager()
 collector_task = None
 
-# =============================
+# ==============================
+# Keyboards
+# ==============================
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة جلسة", callback_data="add_session")],
@@ -46,99 +37,102 @@ def main_keyboard():
         [InlineKeyboardButton("📊 عرض الروابط المجمعة", callback_data="view_links")],
     ])
 
-# =============================
+
+# ==============================
+# /start
+# ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     await update.message.reply_text(
-        f"🤖 **بوت تجميع الروابط**\n\n"
-        f"👤 عدد الجلسات: {sessions_count()}\n\n"
-        "اختر من القائمة:",
-        reply_markup=main_keyboard(),
-        parse_mode="Markdown"
+        "🤖 بوت تجميع الروابط\n\n"
+        "➕ أضف الحساب عبر Session String فقط",
+        reply_markup=main_keyboard()
     )
 
-# =============================
+
+# ==============================
+# Callbacks
+# ==============================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global collector_task
 
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
-    if q.from_user.id != ADMIN_ID:
+    if query.from_user.id != ADMIN_ID:
         return
 
-    data = q.data
+    data = query.data
 
     if data == "add_session":
-        context.user_data["waiting_session"] = True
-        await q.edit_message_text(
-            "➕ **إضافة جلسة**\n\n"
-            "📤 أرسل الآن **Session String** فقط:",
-            parse_mode="Markdown"
+        context.user_data["await_session"] = True
+        await query.edit_message_text(
+            "📤 أرسل **Session String الآن**:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ رجوع", callback_data="back")]
+            ])
         )
 
     elif data == "list_sessions":
-        sessions = sessions_db.all()
-        if not sessions:
-            await q.edit_message_text("❌ لا توجد جلسات")
+        all_sessions = sessions.get_all_sessions()
+        if not all_sessions:
+            await query.edit_message_text("❌ لا توجد جلسات")
             return
 
-        text = "👤 **الجلسات المضافة:**\n\n"
-        for i, s in enumerate(sessions, 1):
-            text += f"{i}. `{s[:25]}...`\n"
+        text = "👤 الجلسات المضافة:\n\n"
+        for i, _ in enumerate(all_sessions, 1):
+            text += f"{i}. Session\n"
 
-        await q.edit_message_text(text, parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=main_keyboard())
 
     elif data == "start_collect":
         if collector_task and not collector_task.done():
-            await q.answer("⚠️ التجميع يعمل بالفعل", show_alert=True)
+            await query.answer("⚠️ التجميع يعمل بالفعل", show_alert=True)
             return
 
         collector_task = asyncio.create_task(start_collector())
-        await q.edit_message_text(
-            "🟢 **تم تشغيل تجميع الروابط**\n\n"
-            "• من كل الحسابات\n"
-            "• بدون تكرار",
-            parse_mode="Markdown"
+        await query.edit_message_text(
+            "🟢 تم تشغيل تجميع الروابط",
+            reply_markup=main_keyboard()
         )
 
-    elif data == "view_links":
-        await q.edit_message_text(
-            "📊 عرض الروابط جاهز (كما تم سابقاً)\n\n"
-            "يمكنك التصفح من الأقسام.",
-        )
+    elif data == "back":
+        await query.edit_message_text("القائمة:", reply_markup=main_keyboard())
 
-# =============================
-async def receive_session_string(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# ==============================
+# استقبال Session String
+# ==============================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    if not context.user_data.get("waiting_session"):
-        return
+    if context.user_data.get("await_session"):
+        session_string = update.message.text.strip()
+        sessions.add_session(session_string)
+        context.user_data["await_session"] = False
 
-    session_string = update.message.text.strip()
-    context.user_data["waiting_session"] = False
+        await update.message.reply_text(
+            "✅ تم إضافة الجلسة بنجاح",
+            reply_markup=main_keyboard()
+        )
 
-    if len(session_string) < 50:
-        await update.message.reply_text("❌ Session String غير صالح")
-        return
 
-    add_session_string(session_string)
-    await update.message.reply_text("✅ تم إضافة الجلسة بنجاح")
-
-# =============================
+# ==============================
+# تشغيل البوت
+# ==============================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callbacks))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_session_string))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("🚀 Bot is running (Session String only)")
+    print("🚀 Bot started successfully")
     app.run_polling()
 
-# =============================
+
 if __name__ == "__main__":
     main()
