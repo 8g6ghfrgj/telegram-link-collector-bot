@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import signal
+import os
 from typing import List, Dict
 from datetime import datetime
 from aiohttp import web
@@ -15,12 +16,12 @@ from telegram import (
     KeyboardButton
 )
 from telegram.ext import (
-    Application,
+    Updater,  # ⬅️ مختلف في الإصدار 13
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    filters,
-    ContextTypes
+    Filters,  # ⬅️ مختلف في الإصدار 13
+    CallbackContext
 )
 
 from config import BOT_TOKEN, LINKS_PER_PAGE, IS_RENDER
@@ -40,7 +41,6 @@ db = Database()
 
 # ===== خادم ويب للـ Health Check =====
 async def health_check(request):
-    """Endpoint للـ Health Check"""
     return web.Response(text='OK')
 
 async def start_web_server():
@@ -49,8 +49,7 @@ async def start_web_server():
     app.router.add_get('/health', health_check)
     app.router.add_get('/', health_check)
     
-    # الحصول على البورت من متغير البيئة أو استخدام 8080
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 10000))
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -59,17 +58,16 @@ async def start_web_server():
     print(f"🌐 خادم الويب يعمل على port {port}")
     await site.start()
     
-    # إبقاء الخادم يعمل
     await asyncio.Event().wait()
 
-# ===== الفئة الرئيسية للبوت =====
+# ===== الفئة الرئيسية للبوت (الإصدار 13) =====
 class TelegramLinksBot:
     def __init__(self):
         self.scraping_tasks = {}
         self.current_selections = {}
-        self.application = None
+        self.updater = None
         
-        # تشغيل خادم الويب في thread منفصل إذا كنا على Render
+        # تشغيل خادم الويب في thread منفصل
         if IS_RENDER:
             print("🚀 بدء تشغيل خادم الويب للـ Health Check...")
             threading.Thread(target=self.run_web_server, daemon=True).start()
@@ -81,8 +79,7 @@ class TelegramLinksBot:
         loop.run_until_complete(start_web_server())
     
     # ===== مساعدات الواجهة =====
-    async def send_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                           message: str = "📱 **القائمة الرئيسية**"):
+    def send_main_menu(self, update: Update, context: CallbackContext, message: str = "📱 **القائمة الرئيسية**"):
         """إرسال القائمة الرئيسية"""
         keyboard = [
             [KeyboardButton("➕ إضافة جلسة"), KeyboardButton("👥 الجلسات المضافة")],
@@ -92,22 +89,18 @@ class TelegramLinksBot:
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         if update.callback_query:
-            await update.callback_query.edit_message_text(
-                text=message,
-                reply_markup=None
-            )
-            await update.callback_query.message.reply_text(
+            update.callback_query.message.reply_text(
                 text="اختر من القائمة:",
                 reply_markup=reply_markup
             )
         else:
-            await update.message.reply_text(
+            update.message.reply_text(
                 text="اختر من القائمة:",
                 reply_markup=reply_markup
             )
     
     # ===== معالجات الأوامر =====
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def start(self, update: Update, context: CallbackContext):
         """بدء البوت"""
         user = update.effective_user
         welcome_msg = f"""
@@ -126,9 +119,10 @@ class TelegramLinksBot:
         🚀 **لتبدأ، اختر من القائمة:**
         """
         
-        await self.send_main_menu(update, context, welcome_msg)
+        update.message.reply_text(welcome_msg, parse_mode='Markdown')
+        self.send_main_menu(update, context)
     
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def help_command(self, update: Update, context: CallbackContext):
         """مساعدة"""
         help_text = """
         📖 **دليل استخدام البوت:**
@@ -148,12 +142,12 @@ class TelegramLinksBot:
         
         ⚡ **يعمل على Render.com**
         """
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        update.message.reply_text(help_text, parse_mode='Markdown')
     
     # ===== إدارة الجلسات =====
-    async def add_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def add_session(self, update: Update, context: CallbackContext):
         """إضافة جلسة جديدة"""
-        await update.message.reply_text(
+        update.message.reply_text(
             "📱 **إضافة جلسة جديدة**\n\n"
             "أرسل لي `session_string` الخاص بحسابك.\n"
             "يمكنك الحصول عليه من @genStr_robot\n\n"
@@ -162,7 +156,7 @@ class TelegramLinksBot:
         )
         context.user_data['awaiting_session'] = True
     
-    async def handle_session_string(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def handle_session_string(self, update: Update, context: CallbackContext):
         """معالجة session_string"""
         if not context.user_data.get('awaiting_session'):
             return
@@ -170,46 +164,76 @@ class TelegramLinksBot:
         session_string = update.message.text.strip()
         
         if len(session_string) < 50:
-            await update.message.reply_text("❌ هذا لا يبدو session string صالح!")
+            update.message.reply_text("❌ هذا لا يبدو session string صالح!")
             context.user_data['awaiting_session'] = False
             return
         
-        await update.message.reply_text("🔍 جاري اختبار الجلسة...")
+        update.message.reply_text("🔍 جاري اختبار الجلسة...")
         
-        scraper = TelegramScraper(session_string)
-        connected = await scraper.connect()
-        
-        if connected:
-            try:
-                me = await scraper.client.get_me()
-                phone_number = me.phone
+        # سيكون هذا في thread منفصل لتجنب Blocking
+        import threading
+        thread = threading.Thread(target=self.test_session, args=(session_string, update, context))
+        thread.start()
+    
+    def test_session(self, session_string, update, context):
+        """اختبار الجلسة في thread منفصل"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            async def test():
+                scraper = TelegramScraper(session_string)
+                connected = await scraper.connect()
                 
-                if db.add_session(session_string, phone_number):
-                    await update.message.reply_text(
-                        f"✅ **تم إضافة الجلسة بنجاح!**\n\n"
-                        f"📞 الرقم: `{phone_number}`\n"
-                        f"👤 الاسم: {me.first_name or ''}\n\n"
-                        "يمكنك الآن استخدام الجلسة لتجميع الروابط.",
-                        parse_mode='Markdown'
-                    )
+                if connected:
+                    try:
+                        me = await scraper.client.get_me()
+                        phone_number = me.phone
+                        
+                        if db.add_session(session_string, phone_number):
+                            await self.updater.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text=f"✅ **تم إضافة الجلسة بنجاح!**\n\n"
+                                     f"📞 الرقم: `{phone_number}`\n"
+                                     f"👤 الاسم: {me.first_name or ''}\n\n"
+                                     "يمكنك الآن استخدام الجلسة لتجميع الروابط.",
+                                parse_mode='Markdown'
+                            )
+                        else:
+                            await self.updater.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text="⚠️ هذه الجلسة مضافه مسبقاً!"
+                            )
+                    except Exception as e:
+                        await self.updater.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=f"❌ خطأ: {str(e)[:100]}"
+                        )
+                    finally:
+                        await scraper.disconnect()
                 else:
-                    await update.message.reply_text("⚠️ هذه الجلسة مضافه مسبقاً!")
-            except Exception as e:
-                await update.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
-            finally:
-                await scraper.disconnect()
-        else:
-            await update.message.reply_text("❌ **الجلسة غير صالحة!**")
+                    await self.updater.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="❌ **الجلسة غير صالحة!**"
+                    )
+            
+            loop.run_until_complete(test())
+            
+        except Exception as e:
+            self.updater.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"❌ خطأ في الاختبار: {str(e)[:100]}"
+            )
         
         context.user_data['awaiting_session'] = False
-        await self.send_main_menu(update, context)
+        self.send_main_menu(update, context)
     
-    async def show_sessions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def show_sessions(self, update: Update, context: CallbackContext):
         """عرض الجلسات المضافة"""
         sessions = db.get_all_sessions()
         
         if not sessions:
-            await update.message.reply_text("📭 لا توجد جلسات مضافة بعد.")
+            update.message.reply_text("📭 لا توجد جلسات مضافة بعد.")
             return
         
         message = "📱 **الجلسات المضافة:**\n\n"
@@ -227,122 +251,58 @@ class TelegramLinksBot:
             [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_menu")]
         ]
         
-        await update.message.reply_text(
+        update.message.reply_text(
             message, 
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # ===== باقي الدوال (مختصرة) =====
-    async def start_scraping_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """قائمة تجميع الروابط"""
-        sessions = db.get_all_sessions()
-        
-        if not sessions:
-            await update.message.reply_text("❌ **لا توجد جلسات!**")
-            return
-        
-        keyboard = []
-        for session in sessions:
-            if session['is_active']:
-                btn_text = f"📱 {session['phone_number']}"
-                callback_data = f"scrape_session_{session['id']}"
-                keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])
-        
-        if not keyboard:
-            await update.message.reply_text("❌ لا توجد جلسات نشطة!")
-            return
-        
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_menu")])
-        
-        await update.message.reply_text(
-            "🔍 **تجميع الروابط**\n\nاختر الجلسة:",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    async def show_links_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """قائمة عرض الروابط"""
-        user_id = update.effective_user.id
-        self.current_selections[user_id] = {'type': None, 'year': None}
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📢 تيليجرام", callback_data="link_type_telegram"),
-                InlineKeyboardButton("💬 واتساب", callback_data="link_type_whatsapp")
-            ],
-            [
-                InlineKeyboardButton("🌐 مواقع", callback_data="link_type_website"),
-                InlineKeyboardButton("📺 يوتيوب", callback_data="link_type_youtube")
-            ],
-            [
-                InlineKeyboardButton("📷 انستجرام", callback_data="link_type_instagram"),
-                InlineKeyboardButton("🐦 تويتر", callback_data="link_type_twitter")
-            ],
-            [InlineKeyboardButton("📂 الكل", callback_data="link_type_all")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_menu")]
-        ]
-        
-        total_links = db.get_links_count()
-        message = f"📊 **عرض الروابط المجمعة**\n\n🔗 **الإجمالي:** {total_links:,}\n\n**اختر نوع الروابط:**"
-        
-        await update.message.reply_text(
-            message,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def handle_callback_query(self, update: Update, context: CallbackContext):
         """معالجة Callback Queries"""
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         data = query.data
         
         try:
             if data == "back_to_menu":
-                await self.send_main_menu(update, context)
+                query.edit_message_text("📱 **القائمة الرئيسية**")
+                self.send_main_menu(update, context)
             
             elif data == "refresh_sessions":
-                await self.show_sessions(update, context)
-            
-            elif data.startswith("scrape_session_"):
-                session_id = int(data.split("_")[2])
-                await query.edit_message_text(
-                    "⏳ **جاري بدء عملية تجميع الروابط...**\n\n"
-                    "هذه العملية قد تستغرق بضع دقائق.\n"
-                    "سأرسل لك التحديثات عند الانتهاء.",
-                    parse_mode='Markdown'
-                )
-                # هنا سيتم بدء عملية الجمع
+                self.show_sessions(update, context)
             
             elif data.startswith("link_type_"):
                 link_type = data.split("_")[2]
                 user_id = update.effective_user.id
                 self.current_selections[user_id] = {'type': link_type, 'year': None}
                 
-                # عرض الروابط مباشرة (بدون اختيار سنة للمساعدة)
-                await self.show_links_page(update, context, 1)
+                # عرض الروابط مباشرة
+                self.show_links_page(update, context, 1)
+            
+            elif data.startswith("page_"):
+                page = int(data.split("_")[1])
+                self.show_links_page(update, context, page)
+            
+            elif data.startswith("export_"):
+                parts = data.split("_")
+                link_type = parts[1]
+                year = parts[2]
+                self.export_links(update, context, link_type, year)
             
             else:
-                await query.edit_message_text(
-                    "⚙️ **جاري العمل...**\n\nاستخدم /start للعودة",
-                    parse_mode='Markdown'
-                )
+                query.edit_message_text("⚙️ **جاري العمل...**")
                 
         except Exception as e:
             logger.error(f"Callback error: {e}")
-            await query.edit_message_text(
-                f"❌ **خطأ:**\n\n{str(e)[:100]}",
-                parse_mode='Markdown'
-            )
+            query.edit_message_text(f"❌ **خطأ:**\n\n{str(e)[:100]}", parse_mode='Markdown')
     
-    async def show_links_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
+    def show_links_page(self, update: Update, context: CallbackContext, page: int = 1):
         """عرض صفحة من الروابط"""
         user_id = update.effective_user.id
         
         if user_id not in self.current_selections:
-            await update.callback_query.answer("❌ ابدأ من القائمة!")
+            update.callback_query.answer("❌ ابدأ من القائمة!")
             return
         
         link_type = self.current_selections[user_id]['type']
@@ -356,7 +316,7 @@ class TelegramLinksBot:
         )
         
         if not links:
-            await update.callback_query.edit_message_text(
+            update.callback_query.edit_message_text(
                 "📭 **لا توجد روابط!**\n\nجرب جمع الروابط أولاً.",
                 parse_mode='Markdown'
             )
@@ -408,28 +368,105 @@ class TelegramLinksBot:
             [InlineKeyboardButton("🔙 رجوع", callback_data="links_menu")]
         ])
         
-        await update.callback_query.edit_message_text(
+        update.callback_query.edit_message_text(
             message,
             parse_mode='Markdown',
             reply_markup=reply_markup,
             disable_web_page_preview=True
         )
     
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def export_links(self, update: Update, context: CallbackContext, link_type: str, year: str):
+        """تصدير الروابط"""
+        year_int = int(year) if year != 'all' and year.isdigit() else None
+        
+        # الحصول على كل الروابط
+        links, total_count = db.get_links(
+            link_type=link_type if link_type != 'all' else None,
+            year=year_int,
+            page=1,
+            per_page=10000
+        )
+        
+        if not links:
+            update.callback_query.answer("❌ لا توجد روابط!", show_alert=True)
+            return
+        
+        # إنشاء ملف
+        type_names = {
+            'telegram': 'تيليجرام', 'whatsapp': 'واتساب',
+            'website': 'مواقع', 'youtube': 'يوتيوب',
+            'instagram': 'انستجرام', 'twitter': 'تويتر',
+            'all': 'الكل'
+        }
+        
+        type_name = type_names.get(link_type, link_type)
+        year_display = year if year != 'all' else 'كل_السنوات'
+        filename = f"links_{type_name}_{year_display}.txt"
+        
+        file_content = f"روابط {type_name} - {year_display}\n"
+        file_content += f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        file_content += f"العدد: {len(links):,}\n"
+        file_content += "="*50 + "\n\n"
+        
+        for i, link in enumerate(links, 1):
+            file_content += f"{i}. {link['link']}\n"
+        
+        # إرسال الملف
+        update.callback_query.message.reply_document(
+            document=file_content.encode('utf-8'),
+            filename=filename,
+            caption=f"✅ تم تصدير {len(links):,} رابط"
+        )
+        
+        update.callback_query.answer("📤 تم إرسال الملف")
+    
+    def handle_message(self, update: Update, context: CallbackContext):
         """معالجة الرسائل النصية"""
         message_text = update.message.text
         
         if message_text == "➕ إضافة جلسة":
-            await self.add_session(update, context)
+            self.add_session(update, context)
         
         elif message_text == "👥 الجلسات المضافة":
-            await self.show_sessions(update, context)
+            self.show_sessions(update, context)
         
         elif message_text == "🔍 تجميع الروابط":
-            await self.start_scraping_menu(update, context)
+            update.message.reply_text(
+                "🔍 **تجميع الروابط**\n\n"
+                "هذه الخاصية قيد التطوير...\n"
+                "سيتم إضافتها قريباً!",
+                parse_mode='Markdown'
+            )
         
         elif message_text == "📊 الروابط المجمعة":
-            await self.show_links_menu(update, context)
+            user_id = update.effective_user.id
+            self.current_selections[user_id] = {'type': None, 'year': None}
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("📢 تيليجرام", callback_data="link_type_telegram"),
+                    InlineKeyboardButton("💬 واتساب", callback_data="link_type_whatsapp")
+                ],
+                [
+                    InlineKeyboardButton("🌐 مواقع", callback_data="link_type_website"),
+                    InlineKeyboardButton("📺 يوتيوب", callback_data="link_type_youtube")
+                ],
+                [
+                    InlineKeyboardButton("📷 انستجرام", callback_data="link_type_instagram"),
+                    InlineKeyboardButton("🐦 تويتر", callback_data="link_type_twitter")
+                ],
+                [InlineKeyboardButton("📂 الكل", callback_data="link_type_all")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_menu")]
+            ]
+            
+            total_links = db.get_links_count()
+            message = f"📊 **عرض الروابط المجمعة**\n\n🔗 **الإجمالي:** {total_links:,}\n\n**اختر نوع الروابط:**"
+            
+            update.message.reply_text(
+                message,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         
         elif message_text == "📈 إحصائيات":
             total_links = db.get_links_count()
@@ -442,16 +479,16 @@ class TelegramLinksBot:
                 f"🌐 **السيرفر:** Render.com\n"
                 f"🕒 **الوقت:** {datetime.now().strftime('%H:%M:%S')}\n"
             )
-            await update.message.reply_text(stats, parse_mode='Markdown')
+            update.message.reply_text(stats, parse_mode='Markdown')
         
         elif message_text == "❓ المساعدة":
-            await self.help_command(update, context)
+            self.help_command(update, context)
         
         elif context.user_data.get('awaiting_session'):
-            await self.handle_session_string(update, context)
+            self.handle_session_string(update, context)
         
         else:
-            await update.message.reply_text(
+            update.message.reply_text(
                 "🤔 لم أفهم رسالتك.\nاستخدم الأزرار أدناه أو /start",
                 reply_markup=ReplyKeyboardMarkup([
                     [KeyboardButton("➕ إضافة جلسة"), KeyboardButton("👥 الجلسات المضافة")],
@@ -460,53 +497,58 @@ class TelegramLinksBot:
                 ], resize_keyboard=True)
             )
     
-    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def cancel(self, update: Update, context: CallbackContext):
         """إلغاء أي عملية"""
         if 'awaiting_session' in context.user_data:
             context.user_data['awaiting_session'] = False
         
-        await update.message.reply_text("✅ تم الإلغاء")
-        await self.send_main_menu(update, context)
+        update.message.reply_text("✅ تم الإلغاء")
+        self.send_main_menu(update, context)
+    
+    def error_handler(self, update: Update, context: CallbackContext):
+        """معالجة الأخطاء"""
+        logger.error(f"Update {update} caused error {context.error}")
+        
+        try:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id if update else None,
+                text="❌ **حدث خطأ!**\n\nجرب مرة أخرى لاحقاً."
+            )
+        except:
+            pass
     
     def run(self):
         """تشغيل البوت"""
         print(f"🚀 بدء تشغيل البوت على Render...")
         
-        # إنشاء التطبيق
-        self.application = Application.builder().token(BOT_TOKEN).build()
+        # إنشاء Updater (الإصدار 13)
+        self.updater = Updater(token=BOT_TOKEN, use_context=True)
         
         # إضافة المعالجات
-        self.application.add_handler(CommandHandler("start", self.start))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("cancel", self.cancel))
-        self.application.add_handler(CallbackQueryHandler(self.handle_callback_query))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        dp = self.updater.dispatcher
+        
+        dp.add_handler(CommandHandler("start", self.start))
+        dp.add_handler(CommandHandler("help", self.help_command))
+        dp.add_handler(CommandHandler("cancel", self.cancel))
+        dp.add_handler(CallbackQueryHandler(self.handle_callback_query))
+        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, self.handle_message))
+        
+        # معالجة الأخطاء
+        dp.add_error_handler(self.error_handler)
         
         # بدء البوت
         print("✅ البوت يعمل الآن!")
         print("📡 في انتظار الرسائل...")
         
-        # تشغيل البوت مع Polling
-        self.application.run_polling(
-            poll_interval=0.5,
-            timeout=30,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        self.updater.start_polling()
+        self.updater.idle()
 
 # ===== التهيئة والتشغيل =====
 if __name__ == "__main__":
-    import os
-    
-    # إضافة os إلى config
-    import config
-    config.os = os
-    
     # التحقق من التوكن
     if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
         print("❌ خطأ: لم يتم تعيين BOT_TOKEN!")
-        print("📝 قم بإضافته في متغيرات Render")
-        print("💡 في Render: Environment → Add Environment Variable")
+        print("📝 في Render: Environment → Add Environment Variable")
         sys.exit(1)
     
     # إعداد معالجة الإشارات
