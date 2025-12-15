@@ -1,12 +1,10 @@
 import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel, Chat
 import re
 from typing import List, Dict, Optional
 from datetime import datetime
 
-from config import API_ID, API_HASH
 from database import Database
 
 class TelegramScraper:
@@ -22,14 +20,16 @@ class TelegramScraper:
     async def connect(self) -> bool:
         """الاتصال بالعميل"""
         try:
+            # بدون API_ID و API_HASH - نستخدم الجلسة فقط
             self.client = TelegramClient(
                 StringSession(self.session_string),
-                API_ID,
-                API_HASH
+                api_id=1,  # قيمة افتراضية (ستأخذ من الجلسة)
+                api_hash=''  # قيمة فارغة
             )
             await self.client.connect()
             
             if not await self.client.is_user_authorized():
+                print("❌ الجلسة غير مصرح بها")
                 return False
             
             me = await self.client.get_me()
