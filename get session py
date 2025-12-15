@@ -1,0 +1,30 @@
+"""
+ملف لإنشاء session string
+تشغيله مرة واحدة فقط على جهازك
+"""
+from telethon.sessions import StringSession
+from telethon.sync import TelegramClient
+
+print("="*50)
+print("إنشاء Telegram Session String")
+print("="*50)
+
+# أدخل رقم هاتفك مع رمز الدولة
+phone = input("أدخل رقم الهاتف (مع +): ")
+
+# سيطلب منك الكود التحقق
+client = TelegramClient(StringSession(), 2040, "b18441a1ff607e10a989891a5462e627")
+
+with client:
+    client.start(phone=phone)
+    
+    session_string = client.session.save()
+    
+    print("\n" + "="*50)
+    print("✅ تم إنشاء Session String بنجاح!")
+    print("="*50)
+    print("\nانسخ النص التالي وأرسله للبوت:")
+    print("-"*50)
+    print(session_string)
+    print("-"*50)
+    print("\n⚠️ احفظه في مكان آمن ولا تشاركه مع أحد!")
