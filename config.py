@@ -1,9 +1,9 @@
 # config.py
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# Telethon (ثابتة – لا مشكلة)
+# قيم ثابتة (لا نستخدم OTP)
 API_ID = 123456
-API_HASH = "0123456789abcdef0123456789abcdef"
+API_HASH = "dummy_api_hash"
