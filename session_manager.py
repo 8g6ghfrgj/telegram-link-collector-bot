@@ -2,90 +2,75 @@
 import os
 import sqlite3
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 
-# ==================================================
-# قيم ثابتة (لمنع الخطأ)
-# ==================================================
-API_ID = 123456
+# =============================
+# إعدادات ثابتة (افتراضية)
+# =============================
+API_ID = 123456        # أي رقم (لن يُستخدم إلا مع Telethon)
 API_HASH = "0123456789abcdef0123456789abcdef"
 
-# ==================================================
-SESSIONS_DIR = "sessions"
-DB_PATH = "sessions.db"
+DB_NAME = "sessions.db"
 
-os.makedirs(SESSIONS_DIR, exist_ok=True)
-
-
+# =============================
+# قاعدة بيانات الجلسات
+# =============================
 class SessionsDB:
     def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self.conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         self.cursor = self.conn.cursor()
-        self._create()
-
-    def _create(self):
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_name TEXT UNIQUE,
-                created_at TEXT
+                session_string TEXT UNIQUE
             )
         """)
         self.conn.commit()
 
-    def add(self, session_name):
+    def add(self, session_string: str):
         self.cursor.execute(
-            "INSERT OR IGNORE INTO sessions (session_name, created_at) VALUES (?, datetime('now'))",
-            (session_name,)
+            "INSERT OR IGNORE INTO sessions (session_string) VALUES (?)",
+            (session_string,)
         )
         self.conn.commit()
 
-    def delete(self, session_name):
+    def delete(self, session_string: str):
         self.cursor.execute(
-            "DELETE FROM sessions WHERE session_name = ?",
-            (session_name,)
+            "DELETE FROM sessions WHERE session_string = ?",
+            (session_string,)
         )
         self.conn.commit()
 
     def all(self):
-        self.cursor.execute(
-            "SELECT session_name FROM sessions ORDER BY id DESC"
-        )
+        self.cursor.execute("SELECT session_string FROM sessions")
         return [row[0] for row in self.cursor.fetchall()]
 
 
 sessions_db = SessionsDB()
 
+# =============================
+# إضافة Session String
+# =============================
+def add_session_string(session_string: str):
+    sessions_db.add(session_string)
 
-# ==================================================
-# حفظ جلسة مرفوعة
-# ==================================================
-def save_uploaded_session(temp_path: str, filename: str):
-    session_name = filename.replace(".session", "")
-    target = os.path.join(SESSIONS_DIR, filename)
-
-    os.replace(temp_path, target)
-    sessions_db.add(session_name)
-
-    return session_name
-
-
-# ==================================================
+# =============================
 # تحميل كل الجلسات
-# ==================================================
+# =============================
 def load_all_clients():
     clients = []
-
-    for name in sessions_db.all():
-        session_path = os.path.join(SESSIONS_DIR, name)
-
+    for s in sessions_db.all():
         try:
-            client = TelegramClient(session_path, API_ID, API_HASH)
+            client = TelegramClient(
+                StringSession(s),
+                API_ID,
+                API_HASH
+            )
             clients.append(client)
-        except Exception:
-            continue
-
+        except Exception as e:
+            print("Session load error:", e)
     return clients
 
-
-def get_sessions_count():
+# =============================
+def sessions_count():
     return len(sessions_db.all())
