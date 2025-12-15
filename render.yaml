@@ -1,14 +1,10 @@
 services:
   - type: worker
-    name: telegram-link-collector
+    name: telegram-multi-account-link-collector
     runtime: docker
     dockerfilePath: Dockerfile
     envVars:
       - key: BOT_TOKEN
-        sync: false
-      - key: API_ID
-        sync: false
-      - key: API_HASH
         sync: false
       - key: DATABASE_PATH
         value: data/database.db
