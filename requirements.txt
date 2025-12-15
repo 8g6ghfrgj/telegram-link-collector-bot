@@ -1,3 +1,4 @@
 python-telegram-bot==13.15  # ⬅️ إصدار أقدم وثابت
 telethon==1.34.0
 aiohttp==3.9.3
+standard-imghdr>=3.13.0
