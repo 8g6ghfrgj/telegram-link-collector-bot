@@ -1,5 +1,5 @@
 import re
-from typing import List, Set
+from typing import List, Set, Optional, Tuple
 from telethon.tl.types import Message
 
 
@@ -14,7 +14,7 @@ URL_REGEX = re.compile(
 
 
 # ======================
-# أنماط المنصات
+# أنماط المنصات (القديمة - لا نلمسها)
 # ======================
 
 PLATFORM_PATTERNS = {
@@ -27,7 +27,7 @@ PLATFORM_PATTERNS = {
 
 
 # ======================
-# استخراج الروابط من الرسالة
+# استخراج الروابط من الرسالة (كما هو)
 # ======================
 
 def extract_links_from_message(message: Message) -> List[str]:
@@ -40,12 +40,10 @@ def extract_links_from_message(message: Message) -> List[str]:
     """
     links: Set[str] = set()
 
-    # 1️⃣ النص أو الكابتشن
     text = message.text or message.message or ""
     if text:
         links.update(URL_REGEX.findall(text))
 
-    # 2️⃣ الأزرار (Inline Buttons)
     if message.reply_markup:
         for row in message.reply_markup.rows:
             for button in row.buttons:
@@ -56,15 +54,56 @@ def extract_links_from_message(message: Message) -> List[str]:
 
 
 # ======================
-# تصنيف المنصة
+# تصنيف المنصة (كما هو)
 # ======================
 
 def classify_platform(url: str) -> str:
-    """
-    تحديد المنصة من الرابط
-    """
     for platform, pattern in PLATFORM_PATTERNS.items():
         if pattern.search(url):
             return platform
-
     return "other"
+
+
+# =========================================================
+# ================== الإضافات الجديدة فقط ==================
+# =========================================================
+
+# -------- Telegram --------
+TG_GROUP_REGEX = re.compile(r"https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+", re.I)
+TG_CHANNEL_REGEX = re.compile(r"https?://t\.me/[A-Za-z0-9_]+", re.I)
+
+# -------- WhatsApp --------
+WA_GROUP_REGEX = re.compile(r"https?://chat\.whatsapp\.com/[A-Za-z0-9]+", re.I)
+WA_PHONE_REGEX = re.compile(r"https?://wa\.me/\d+", re.I)
+
+
+def filter_and_classify_link(url: str) -> Optional[Tuple[str, str]]:
+    """
+    فلترة الرابط قبل الحفظ
+
+    Returns:
+        (platform, chat_type)
+        أو None إذا الرابط غير مرغوب
+    """
+
+    # ===== Telegram =====
+    if "t.me" in url:
+        if TG_GROUP_REGEX.match(url):
+            return ("telegram", "group")
+
+        if TG_CHANNEL_REGEX.match(url):
+            # حسابات أشخاص تُستبعد لاحقاً في collector
+            return ("telegram", "channel")
+
+        return None
+
+    # ===== WhatsApp =====
+    if "whatsapp.com" in url or "wa.me" in url:
+        if WA_GROUP_REGEX.match(url):
+            return ("whatsapp", "group")
+
+        # ❌ روابط أرقام
+        return None
+
+    # ===== Other =====
+    return ("other", "other")
