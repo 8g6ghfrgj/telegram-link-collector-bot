@@ -1,13 +1,12 @@
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# إعدادات البوت - توكن فقط
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # من متغيرات Render
 
-# إعدادات البوت
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # حرك BotFather فقط
+# إعدادات قاعدة البيانات
+DB_NAME = "telegram_links_bot.db"
 
 # إعدادات أخرى
-DB_NAME = "telegram_links_bot.db"
 LINKS_PER_PAGE = 20
 SUPPORTED_LINK_TYPES = {
     'telegram': ['t.me', 'telegram.me'],
@@ -17,3 +16,6 @@ SUPPORTED_LINK_TYPES = {
     'instagram': ['instagram.com'],
     'twitter': ['twitter.com', 'x.com']
 }
+
+# للتحقق من أننا على Render
+IS_RENDER = os.getenv("RENDER", "false").lower() == "true"
