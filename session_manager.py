@@ -1,5 +1,4 @@
 import sqlite3
-import os
 import uuid
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -8,16 +7,17 @@ from config import API_ID, API_HASH, DATABASE_PATH
 
 
 # ======================
-# Database Helper
+# Database Helpers
 # ======================
 
 def get_connection():
     return sqlite3.connect(DATABASE_PATH)
 
 
-def ensure_table():
+def init_sessions_table():
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,6 +25,7 @@ def ensure_table():
             session TEXT NOT NULL UNIQUE
         )
     """)
+
     conn.commit()
     conn.close()
 
@@ -35,11 +36,14 @@ def ensure_table():
 
 def add_session(session_string: str):
     """
-    إضافة Session String بعد التحقق من صحته
+    إضافة Session String فقط
+    بدون رقم
+    بدون كود
+    مع التحقق أنه صالح
     """
-    ensure_table()
+    init_sessions_table()
 
-    # تحقق من أن الـ session صالح
+    # تحقق من صحة الـ Session
     try:
         client = TelegramClient(
             StringSession(session_string),
@@ -47,21 +51,25 @@ def add_session(session_string: str):
             API_HASH
         )
         client.connect()
+
         if not client.is_user_authorized():
             client.disconnect()
             raise ValueError("Session غير صالح أو منتهي")
+
         client.disconnect()
+
     except Exception:
         raise ValueError("Session String غير صحيح")
 
-    name = f"Account-{uuid.uuid4().hex[:6]}"
+    account_name = f"Account-{uuid.uuid4().hex[:6]}"
 
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         cur.execute(
             "INSERT INTO sessions (name, session) VALUES (?, ?)",
-            (name, session_string)
+            (account_name, session_string)
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -71,11 +79,17 @@ def add_session(session_string: str):
 
 
 def get_all_sessions():
-    ensure_table()
+    """
+    إرجاع كل الحسابات المضافة
+    """
+    init_sessions_table()
+
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("SELECT id, name, session FROM sessions")
     rows = cur.fetchall()
+
     conn.close()
 
     return [
@@ -89,12 +103,18 @@ def get_all_sessions():
 
 
 def delete_session(session_id: int):
-    ensure_table()
+    """
+    حذف حساب واحد
+    """
+    init_sessions_table()
+
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute(
         "DELETE FROM sessions WHERE id = ?",
         (session_id,)
     )
+
     conn.commit()
     conn.close()
