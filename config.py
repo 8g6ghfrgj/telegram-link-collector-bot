@@ -1,13 +1,14 @@
 import os
 
-# إعدادات البوت - توكن فقط
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # من متغيرات Render
+# هذه القيم تأخذ تلقائياً من Environment Variables في Render
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# إعدادات قاعدة البيانات
+# إعدادات أخرى (ثابتة)
 DB_NAME = "telegram_links_bot.db"
-
-# إعدادات أخرى
 LINKS_PER_PAGE = 20
+IS_RENDER = os.getenv("RENDER", "false").lower() == "true"
+
+# أنواع الروابط المدعومة
 SUPPORTED_LINK_TYPES = {
     'telegram': ['t.me', 'telegram.me'],
     'whatsapp': ['wa.me', 'whatsapp.com'],
@@ -16,6 +17,3 @@ SUPPORTED_LINK_TYPES = {
     'instagram': ['instagram.com'],
     'twitter': ['twitter.com', 'x.com']
 }
-
-# للتحقق من أننا على Render
-IS_RENDER = os.getenv("RENDER", "false").lower() == "true"
