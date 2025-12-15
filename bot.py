@@ -30,8 +30,8 @@ from collector import (
 from database import (
     init_db,
     get_links_by_platform_paginated,
-    count_links_by_platform,
     export_links,
+    get_links_by_platform_and_type,  # ✅ إضافة فقط
 )
 
 # ======================
@@ -45,17 +45,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ======================
 
-PLATFORMS = [
-    ("telegram", "📨 تيليجرام"),
-    ("whatsapp", "📞 واتساب"),
-    ("instagram", "📸 إنستغرام"),
-    ("facebook", "📘 فيسبوك"),
-    ("x", "❌ X"),
-    ("other", "🌐 أخرى"),
-]
-
 PAGE_SIZE = 20
-
 
 # ======================
 # Keyboards
@@ -73,26 +63,45 @@ def main_keyboard():
 
 
 def platforms_keyboard():
-    buttons = []
-    for key, name in PLATFORMS:
-        buttons.append(
-            InlineKeyboardButton(name, callback_data=f"links:{key}:0")
-        )
-
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📨 تيليجرام", callback_data="choose:telegram")],
+        [InlineKeyboardButton("📞 واتساب", callback_data="choose:whatsapp")],
+    ])
 
 
-def pagination_keyboard(platform, page):
+def telegram_types_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📢 القنوات", callback_data="links:telegram:channel:0"),
+            InlineKeyboardButton("👥 المجموعات", callback_data="links:telegram:group:0"),
+        ]
+    ])
+
+
+def whatsapp_types_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👥 مجموعات واتساب", callback_data="links:whatsapp:group:0"),
+        ]
+    ])
+
+
+def pagination_keyboard(platform, chat_type, page):
     buttons = []
 
     if page > 0:
         buttons.append(
-            InlineKeyboardButton("⬅️ السابق", callback_data=f"links:{platform}:{page - 1}")
+            InlineKeyboardButton(
+                "⬅️ السابق",
+                callback_data=f"links:{platform}:{chat_type}:{page - 1}"
+            )
         )
 
     buttons.append(
-        InlineKeyboardButton("➡️ التالي", callback_data=f"links:{platform}:{page + 1}")
+        InlineKeyboardButton(
+            "➡️ التالي",
+            callback_data=f"links:{platform}:{chat_type}:{page + 1}"
+        )
     )
 
     return InlineKeyboardMarkup([buttons])
@@ -164,7 +173,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ⏹ إيقاف الجمع
     elif data == "stop_collect":
         stop_collection()
-        await query.message.reply_text("⏹ تم إيقاف الاستماع للرسائل الجديدة.")
+        await query.message.reply_text("⏹ تم إيقاف الاستماع.")
 
     # 📊 عرض الروابط
     elif data == "view_links":
@@ -173,13 +182,27 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=platforms_keyboard()
         )
 
-    # عرض روابط حسب المنصة + Pagination
+    # اختيار منصة
+    elif data == "choose:telegram":
+        await query.message.reply_text(
+            "📨 روابط تيليجرام:",
+            reply_markup=telegram_types_keyboard()
+        )
+
+    elif data == "choose:whatsapp":
+        await query.message.reply_text(
+            "📞 روابط واتساب:",
+            reply_markup=whatsapp_types_keyboard()
+        )
+
+    # عرض روابط (منصة + نوع + Pagination)
     elif data.startswith("links:"):
-        _, platform, page = data.split(":")
+        _, platform, chat_type, page = data.split(":")
         page = int(page)
 
-        links = get_links_by_platform_paginated(
+        links = get_links_by_platform_and_type(
             platform=platform,
+            chat_type=chat_type,
             limit=PAGE_SIZE,
             offset=page * PAGE_SIZE
         )
@@ -188,7 +211,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ لا توجد روابط.")
             return
 
-        text = f"🔗 روابط ({platform}) – صفحة {page + 1}\n\n"
+        title = f"{platform.upper()} / {chat_type.upper()}"
+        text = f"🔗 روابط {title} – صفحة {page + 1}\n\n"
 
         for url, date in links:
             year = date[:4] if date else "----"
@@ -196,28 +220,18 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             text[:4000],
-            reply_markup=pagination_keyboard(platform, page)
+            reply_markup=pagination_keyboard(platform, chat_type, page)
         )
 
     # 📤 تصدير الروابط
     elif data == "export_links":
-        buttons = []
-        for key, name in PLATFORMS:
-            buttons.append(
-                InlineKeyboardButton(
-                    f"📄 {name}",
-                    callback_data=f"export:{key}"
-                )
-            )
-        buttons.append(
-            InlineKeyboardButton("📄 تصدير الكل", callback_data="export:all")
-        )
-
-        rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-
         await query.message.reply_text(
-            "📤 اختر نوع التصدير:",
-            reply_markup=InlineKeyboardMarkup(rows)
+            "📤 التصدير:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📄 تصدير الكل", callback_data="export:all")],
+                [InlineKeyboardButton("📄 تيليجرام", callback_data="export:telegram")],
+                [InlineKeyboardButton("📄 واتساب", callback_data="export:whatsapp")],
+            ])
         )
 
     elif data.startswith("export:"):
@@ -225,7 +239,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         path = export_links(platform)
 
         if not path or not os.path.exists(path):
-            await query.message.reply_text("❌ لا توجد روابط للتصدير.")
+            await query.message.reply_text("❌ لا توجد روابط.")
             return
 
         with open(path, "rb") as f:
@@ -243,7 +257,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_session"):
         try:
             add_session(update.message.text.strip())
-            await update.message.reply_text("✅ تم إضافة الحساب بنجاح.")
+            await update.message.reply_text("✅ تم إضافة الحساب.")
         except Exception as e:
             await update.message.reply_text(f"❌ {e}")
         finally:
