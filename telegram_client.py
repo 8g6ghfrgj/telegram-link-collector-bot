@@ -2,8 +2,9 @@ import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict
 from datetime import datetime
+import aiohttp
 
 from database import Database
 
@@ -18,23 +19,33 @@ class TelegramScraper:
         )
     
     async def connect(self) -> bool:
-        """الاتصال بالعميل"""
+        """الاتصال بالعميل بدون API"""
         try:
-            # بدون API_ID و API_HASH - نستخدم الجلسة فقط
+            # استخدام session string فقط
             self.client = TelegramClient(
                 StringSession(self.session_string),
-                api_id=1,  # قيمة افتراضية (ستأخذ من الجلسة)
-                api_hash=''  # قيمة فارغة
+                api_id=2040,  # قيمة ثابتة للتوافق
+                api_hash='b18441a1ff607e10a989891a5462e627'  # قيمة ثابتة
             )
+            
+            # إعدادات خاصة لـ Render
+            self.client.session.set_dc(2, '149.154.167.40', 443)
+            
             await self.client.connect()
             
             if not await self.client.is_user_authorized():
                 print("❌ الجلسة غير مصرح بها")
                 return False
             
-            me = await self.client.get_me()
-            print(f"✅ Connected as: {me.phone}")
-            return True
+            # اختبار الاتصال
+            try:
+                me = await self.client.get_me()
+                print(f"✅ Connected as: {me.phone}")
+                return True
+            except Exception as e:
+                print(f"❌ Error getting user: {e}")
+                return False
+                
         except Exception as e:
             print(f"❌ Connection error: {e}")
             return False
@@ -46,7 +57,7 @@ class TelegramScraper:
         
         chats = []
         try:
-            async for dialog in self.client.iter_dialogs():
+            async for dialog in self.client.iter_dialogs(limit=200):
                 if dialog.is_channel or dialog.is_group:
                     chats.append({
                         'id': dialog.id,
@@ -80,8 +91,8 @@ class TelegramScraper:
             # جمع الرسائل (من القديم إلى الجديد)
             async for message in self.client.iter_messages(
                 chat, 
-                reverse=True,  # من الرسائل القديمة
-                limit=None     # كل الرسائل
+                reverse=True,
+                limit=10000  # حد للحماية
             ):
                 total_messages += 1
                 
@@ -89,7 +100,6 @@ class TelegramScraper:
                     links = self.link_pattern.findall(message.text)
                     
                     for link in links:
-                        # استخراج السنة من تاريخ الرسالة
                         if message.date:
                             year = message.date.year
                         else:
@@ -102,6 +112,10 @@ class TelegramScraper:
                 # تحديث كل 100 رسالة
                 if total_messages % 100 == 0:
                     print(f"   ↳ معالجة {total_messages} رسالة، وجد {total_links} رابط")
+                    
+                # تحقق من الوقت المستغرق على Render
+                if total_messages > 5000:  # حد آمن
+                    break
             
             # إضافة القناة إلى قاعدة البيانات
             self.db.add_chat(chat_id, chat_title, 
@@ -125,7 +139,6 @@ class TelegramScraper:
             error_msg = str(e)
             print(f"❌ خطأ في جمع {chat_id}: {error_msg}")
             
-            # تسجيل الخطأ
             self.db.add_scraping_log(chat_id, session_id, 'failed', 
                                    total_messages, total_links, error_msg)
             
@@ -143,12 +156,12 @@ class TelegramScraper:
         
         print(f"🔍 بدء جمع الروابط من {len(chats)} قناة/جروب")
         
-        for chat in chats:
+        for chat in chats[:5]:  # حد 5 قنوات على Render للحماية
             result = await self.scrape_chat(chat['id'], session_id)
             results.append(result)
             
-            # تأخير بين القنوات لتجنب الحظر
-            await asyncio.sleep(2)
+            # تأخير بين القنوات
+            await asyncio.sleep(3)
         
         # حساب الإحصائيات
         successful = sum(1 for r in results if r['success'])
@@ -156,9 +169,9 @@ class TelegramScraper:
         total_links = sum(r.get('total_links', 0) for r in results)
         
         return {
-            'total_chats': len(chats),
+            'total_chats': len(results),
             'successful': successful,
-            'failed': len(chats) - successful,
+            'failed': len(results) - successful,
             'total_messages': total_msgs,
             'total_links': total_links,
             'results': results
@@ -167,4 +180,7 @@ class TelegramScraper:
     async def disconnect(self):
         """قطع الاتصال"""
         if self.client:
-            await self.client.disconnect()
+            try:
+                await self.client.disconnect()
+            except:
+                pass
