@@ -4,7 +4,7 @@ from telethon.tl.types import Message
 
 
 # ======================
-# Regex Patterns
+# Regex عام لأي رابط
 # ======================
 
 URL_REGEX = re.compile(
@@ -12,17 +12,22 @@ URL_REGEX = re.compile(
     re.IGNORECASE
 )
 
+
+# ======================
+# أنماط المنصات
+# ======================
+
 PLATFORM_PATTERNS = {
     "telegram": re.compile(r"(t\.me|telegram\.me)", re.IGNORECASE),
     "whatsapp": re.compile(r"(wa\.me|chat\.whatsapp\.com)", re.IGNORECASE),
     "instagram": re.compile(r"(instagram\.com)", re.IGNORECASE),
-    "facebook": re.compile(r"(facebook\.com|fb\.watch|fb\.me)", re.IGNORECASE),
+    "facebook": re.compile(r"(facebook\.com|fb\.me|fb\.watch)", re.IGNORECASE),
     "x": re.compile(r"(x\.com|twitter\.com)", re.IGNORECASE),
 }
 
 
 # ======================
-# Public API
+# استخراج الروابط من الرسالة
 # ======================
 
 def extract_links_from_message(message: Message) -> List[str]:
@@ -30,15 +35,17 @@ def extract_links_from_message(message: Message) -> List[str]:
     استخراج الروابط من:
     - نص الرسالة
     - الكابتشن
-    - الأزرار (Inline Buttons)
+    - الروابط المخفية
+    - أزرار Inline
     """
     links: Set[str] = set()
 
-    # 1️⃣ النص / الكابتشن
+    # 1️⃣ النص أو الكابتشن
     text = message.text or message.message or ""
-    links.update(find_urls(text))
+    if text:
+        links.update(URL_REGEX.findall(text))
 
-    # 2️⃣ الأزرار
+    # 2️⃣ الأزرار (Inline Buttons)
     if message.reply_markup:
         for row in message.reply_markup.rows:
             for button in row.buttons:
@@ -48,18 +55,16 @@ def extract_links_from_message(message: Message) -> List[str]:
     return list(links)
 
 
+# ======================
+# تصنيف المنصة
+# ======================
+
 def classify_platform(url: str) -> str:
+    """
+    تحديد المنصة من الرابط
+    """
     for platform, pattern in PLATFORM_PATTERNS.items():
         if pattern.search(url):
             return platform
+
     return "other"
-
-
-# ======================
-# Helpers
-# ======================
-
-def find_urls(text: str) -> List[str]:
-    if not text:
-        return []
-    return URL_REGEX.findall(text)
