@@ -29,9 +29,8 @@ from collector import (
 )
 from database import (
     init_db,
-    get_links_by_platform_paginated,
     export_links,
-    get_links_by_platform_and_type,  # ✅ إضافة فقط
+    get_links_by_platform_and_type,
 )
 
 # ======================
@@ -66,6 +65,10 @@ def platforms_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📨 تيليجرام", callback_data="choose:telegram")],
         [InlineKeyboardButton("📞 واتساب", callback_data="choose:whatsapp")],
+        [InlineKeyboardButton("📸 إنستغرام", callback_data="links:instagram:other:0")],
+        [InlineKeyboardButton("❌ X / تويتر", callback_data="links:x:other:0")],
+        [InlineKeyboardButton("📘 فيسبوك", callback_data="links:facebook:other:0")],
+        [InlineKeyboardButton("🌐 مواقع أخرى", callback_data="links:other:other:0")],
     ])
 
 
@@ -231,6 +234,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("📄 تصدير الكل", callback_data="export:all")],
                 [InlineKeyboardButton("📄 تيليجرام", callback_data="export:telegram")],
                 [InlineKeyboardButton("📄 واتساب", callback_data="export:whatsapp")],
+                [InlineKeyboardButton("📄 إنستغرام", callback_data="export:instagram")],
+                [InlineKeyboardButton("📄 تويتر / X", callback_data="export:x")],
+                [InlineKeyboardButton("📄 فيسبوك", callback_data="export:facebook")],
+                [InlineKeyboardButton("📄 مواقع أخرى", callback_data="export:other")],
             ])
         )
 
