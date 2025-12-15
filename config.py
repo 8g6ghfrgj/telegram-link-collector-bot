@@ -1,8 +1,11 @@
-import os
+# config.py
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+# توكن البوت (تضعه في Render Environment)
+BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
 
-# قيم ثابتة – لا نطلب منك شيء
+# آيدي الأدمن (رقمك)
+ADMIN_ID = 123456789
+
+# قيم ثابتة (مش حقيقية – فقط لتشغيل Telethon مع Session String)
 API_ID = 123456
-API_HASH = "0123456789abcdef0123456789abcdef"
+API_HASH = "dummy_api_hash_for_session_string"
