@@ -26,7 +26,6 @@ def init_db():
     مع منع التكرار (url UNIQUE)
     """
 
-    # ✅ التعديل هنا (سطرين فقط)
     dir_name = os.path.dirname(DATABASE_PATH)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
@@ -54,6 +53,11 @@ def init_db():
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_links_date
         ON links (message_date)
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_links_platform_type
+        ON links (platform, chat_type)
     """)
 
     conn.commit()
@@ -126,7 +130,7 @@ def count_links_by_platform() -> Dict[str, int]:
 
 
 # ======================
-# Pagination / View
+# Pagination (القديمة - لا نلمسها)
 # ======================
 
 def get_links_by_platform_paginated(
@@ -135,9 +139,7 @@ def get_links_by_platform_paginated(
     offset: int
 ) -> List[Tuple[str, str]]:
     """
-    جلب الروابط حسب المنصة
-    مع Pagination
-    مرتبة بالأحدث أولاً
+    جلب الروابط حسب المنصة فقط
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -163,6 +165,43 @@ def get_links_by_platform_paginated(
             """,
             (platform, limit, offset)
         )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return rows
+
+
+# ======================
+# Pagination (جديدة: منصة + نوع)
+# ======================
+
+def get_links_by_platform_and_type(
+    platform: str,
+    chat_type: str,
+    limit: int,
+    offset: int
+) -> List[Tuple[str, str]]:
+    """
+    جلب الروابط حسب:
+    - المنصة (telegram / whatsapp)
+    - النوع (group / channel)
+    مع Pagination
+    """
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT url, message_date
+        FROM links
+        WHERE platform = ? AND chat_type = ?
+        ORDER BY message_date DESC
+        LIMIT ? OFFSET ?
+        """,
+        (platform, chat_type, limit, offset)
+    )
 
     rows = cur.fetchall()
     conn.close()
