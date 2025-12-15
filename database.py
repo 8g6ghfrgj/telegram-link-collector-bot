@@ -1,81 +1,120 @@
 import sqlite3
-import os
-from config import DATABASE_PATH
+import uuid
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+
+from config import API_ID, API_HASH, DATABASE_PATH
 
 
-def conn():
-    return sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+# ======================
+# Database Helpers
+# ======================
+
+def get_connection():
+    return sqlite3.connect(DATABASE_PATH)
 
 
-def init_db():
-    c = conn()
-    cur = c.cursor()
+def init_sessions_table():
+    conn = get_connection()
+    cur = conn.cursor()
+
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS links (
-            id INTEGER PRIMARY KEY,
-            url TEXT UNIQUE,
-            platform TEXT,
-            source_account TEXT,
-            chat_type TEXT,
-            chat_id TEXT,
-            message_date TEXT
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            session TEXT NOT NULL UNIQUE
         )
     """)
-    c.commit()
-    c.close()
+
+    conn.commit()
+    conn.close()
 
 
-def save_link(url, platform, source, chat_type, chat_id, date):
-    if not url:
-        return
-    c = conn()
-    cur = c.cursor()
+# ======================
+# Session Operations
+# ======================
+
+def add_session(session_string: str):
+    """
+    إضافة Session String فقط
+    بدون رقم
+    بدون كود
+    مع التحقق أنه صالح
+    """
+    init_sessions_table()
+
+    # تحقق من صحة الـ Session
+    try:
+        client = TelegramClient(
+            StringSession(session_string),
+            API_ID,
+            API_HASH
+        )
+        client.connect()
+
+        if not client.is_user_authorized():
+            client.disconnect()
+            raise ValueError("Session غير صالح أو منتهي")
+
+        client.disconnect()
+
+    except Exception:
+        raise ValueError("Session String غير صحيح")
+
+    account_name = f"Account-{uuid.uuid4().hex[:6]}"
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            "INSERT INTO sessions (name, session) VALUES (?, ?)",
+            (account_name, session_string)
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise ValueError("هذا الحساب مضاف مسبقاً")
+    finally:
+        conn.close()
+
+
+def get_all_sessions():
+    """
+    إرجاع كل الحسابات المضافة
+    """
+    init_sessions_table()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, name, session FROM sessions")
+    rows = cur.fetchall()
+
+    conn.close()
+
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "session": row[2]
+        }
+        for row in rows
+    ]
+
+
+def delete_session(session_id: int):
+    """
+    حذف حساب واحد
+    """
+    init_sessions_table()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
     cur.execute(
-        "INSERT OR IGNORE INTO links VALUES (NULL,?,?,?,?,?,?)",
-        (url, platform, source, chat_type, chat_id, str(date))
+        "DELETE FROM sessions WHERE id = ?",
+        (session_id,)
     )
-    c.commit()
-    c.close()
 
-
-def count_links_by_platform():
-    c = conn()
-    cur = c.cursor()
-    cur.execute("SELECT platform, COUNT(*) FROM links GROUP BY platform")
-    rows = cur.fetchall()
-    c.close()
-    return {r[0] or "other": r[1] for r in rows}
-
-
-def get_links(limit=20, offset=0):
-    c = conn()
-    cur = c.cursor()
-    cur.execute("""
-        SELECT url, message_date
-        FROM links
-        ORDER BY message_date DESC
-        LIMIT ? OFFSET ?
-    """, (limit, offset))
-    rows = cur.fetchall()
-    c.close()
-    return rows
-
-
-def export_links(platform="all"):
-    c = conn()
-    cur = c.cursor()
-    cur.execute("SELECT url FROM links ORDER BY id ASC")
-    rows = cur.fetchall()
-    c.close()
-
-    if not rows:
-        return None
-
-    os.makedirs("exports", exist_ok=True)
-    path = "exports/links_all.txt"
-
-    with open(path, "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(r[0] + "\n")
-
-    return path
+    conn.commit()
+    conn.close()
