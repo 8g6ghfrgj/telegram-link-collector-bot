@@ -9,7 +9,11 @@ from telethon.tl.types import Message
 from config import API_ID, API_HASH
 from session_manager import get_all_sessions
 from database import save_link
-from link_utils import extract_links_from_message, classify_platform
+from link_utils import (
+    extract_links_from_message,
+    classify_platform,
+    filter_and_classify_link,   # ✅ إضافة فقط
+)
 from file_extractors import extract_links_from_file
 
 # ======================
@@ -184,7 +188,7 @@ async def process_message(
         return
 
     chat = await message.get_chat()
-    chat_type = chat_type_override or get_chat_type(chat)
+    _ = chat_type_override or get_chat_type(chat)  # لم نعد نستخدمه للحفظ
 
     # ======================
     # 1️⃣ روابط النص + الأزرار
@@ -193,13 +197,17 @@ async def process_message(
     links = extract_links_from_message(message)
 
     for link in links:
-        platform = classify_platform(link)
+        classified = filter_and_classify_link(link)
+        if not classified:
+            continue  # ❌ تجاهل روابط غير مرغوبة
+
+        platform, link_chat_type = classified
 
         save_link(
             url=link,
             platform=platform,
             source_account=account_name,
-            chat_type=chat_type,
+            chat_type=link_chat_type,  # ✅ group / channel
             chat_id=str(message.chat_id),
             message_date=message.date
         )
@@ -216,13 +224,17 @@ async def process_message(
             )
 
             for link in file_links:
-                platform = classify_platform(link)
+                classified = filter_and_classify_link(link)
+                if not classified:
+                    continue
+
+                platform, link_chat_type = classified
 
                 save_link(
                     url=link,
                     platform=platform,
                     source_account=account_name,
-                    chat_type=chat_type,
+                    chat_type=link_chat_type,
                     chat_id=str(message.chat_id),
                     message_date=message.date
                 )
