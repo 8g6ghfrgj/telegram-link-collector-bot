@@ -25,7 +25,11 @@ def init_db():
     إنشاء جدول الروابط
     مع منع التكرار (url UNIQUE)
     """
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+
+    # ✅ التعديل هنا (سطرين فقط)
+    dir_name = os.path.dirname(DATABASE_PATH)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
 
     conn = get_connection()
     cur = conn.cursor()
