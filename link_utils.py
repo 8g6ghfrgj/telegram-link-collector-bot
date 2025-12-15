@@ -77,13 +77,13 @@ WA_GROUP_REGEX = re.compile(r"https?://chat\.whatsapp\.com/[A-Za-z0-9]+", re.I)
 WA_PHONE_REGEX = re.compile(r"https?://wa\.me/\d+", re.I)
 
 
-def filter_and_classify_link(url: str) -> Optional[Tuple[str, str]]:
+def filter_and_classify_link(url: str):
     """
     فلترة الرابط قبل الحفظ
 
     Returns:
         (platform, chat_type)
-        أو None إذا الرابط غير مرغوب
+        أو None إذا الرابط مرفوض
     """
 
     # ===== Telegram =====
@@ -92,9 +92,9 @@ def filter_and_classify_link(url: str) -> Optional[Tuple[str, str]]:
             return ("telegram", "group")
 
         if TG_CHANNEL_REGEX.match(url):
-            # حسابات أشخاص تُستبعد لاحقاً في collector
             return ("telegram", "channel")
 
+        # ❌ حساب شخص
         return None
 
     # ===== WhatsApp =====
@@ -102,8 +102,10 @@ def filter_and_classify_link(url: str) -> Optional[Tuple[str, str]]:
         if WA_GROUP_REGEX.match(url):
             return ("whatsapp", "group")
 
-        # ❌ روابط أرقام
+        # ❌ رقم هاتف
         return None
 
-    # ===== Other =====
-    return ("other", "other")
+    # ===== باقي المنصات (مهم) =====
+    # إنستغرام / تويتر / فيسبوك / مواقع
+    platform = classify_platform(url)
+    return (platform, "other")
