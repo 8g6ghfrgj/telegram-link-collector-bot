@@ -1,38 +1,187 @@
-import os
+import asyncio
+import logging
+from typing import List
+
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
+from telethon.tl.types import Message
+
+from config import API_ID, API_HASH
+from session_manager import get_all_sessions
+from database import save_link
+from link_utils import extract_links_from_message
+from file_extractors import extract_links_from_file
+
+logger = logging.getLogger(__name__)
 
 # ======================
-# Telegram Bot
+# Global State
 # ======================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+_clients: List[TelegramClient] = []
+_collecting: bool = False
+_stop_event = asyncio.Event()
+
 
 # ======================
-# Telegram API (Telethon)
+# Public API
 # ======================
 
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
+def is_collecting() -> bool:
+    return _collecting
+
+
+def stop_collection():
+    global _collecting
+    _collecting = False
+    _stop_event.set()
+    logger.info("Collection stopped (listening only).")
+
+
+async def start_collection():
+    global _collecting, _clients
+    if _collecting:
+        return
+
+    _collecting = True
+    _stop_event.clear()
+    _clients = []
+
+    sessions = get_all_sessions()
+    if not sessions:
+        logger.warning("No sessions available.")
+        _collecting = False
+        return
+
+    tasks = []
+    for session in sessions:
+        tasks.append(run_client(session))
+
+    await asyncio.gather(*tasks)
+    logger.info("Finished collecting old history.")
+    # بعد الانتهاء من التاريخ القديم نبقى فقط على الاستماع
+
 
 # ======================
-# Database
+# Client Runner
 # ======================
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/database.db")
+async def run_client(session_data: dict):
+    session_string = session_data["session"]
+    account_name = session_data["name"]
+
+    client = TelegramClient(
+        StringSession(session_string),
+        API_ID,
+        API_HASH,
+    )
+
+    await client.connect()
+    _clients.append(client)
+
+    logger.info(f"Client started: {account_name}")
+
+    # استماع للرسائل الجديدة
+    @client.on(events.NewMessage)
+    async def handler(event):
+        if not _collecting:
+            return
+        await process_message(
+            event.message,
+            account_name,
+            client
+        )
+
+    # قراءة كل الرسائل القديمة
+    await collect_old_messages(client, account_name)
+
+    # إبقاء الاتصال مفتوح للاستماع
+    await _stop_event.wait()
+    await client.disconnect()
+
 
 # ======================
-# Runtime
+# Collect History
 # ======================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+async def collect_old_messages(client: TelegramClient, account_name: str):
+    async for dialog in client.iter_dialogs():
+        try:
+            entity = dialog.entity
+            chat_type = get_chat_type(entity)
 
-EXPORT_DIR = os.getenv("EXPORT_DIR", "exports")
+            async for message in client.iter_messages(entity, reverse=True):
+                if not _collecting:
+                    return
+
+                await process_message(
+                    message,
+                    account_name,
+                    client,
+                    chat_type_override=chat_type
+                )
+
+        except Exception as e:
+            logger.error(f"Error reading dialog: {e}")
+
 
 # ======================
-# Validation
+# Message Processing
 # ======================
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+async def process_message(
+    message: Message,
+    account_name: str,
+    client: TelegramClient,
+    chat_type_override: str | None = None
+):
+    if not message:
+        return
 
-if not API_ID or not API_HASH:
-    raise RuntimeError("API_ID / API_HASH are not set")
+    chat = await message.get_chat()
+    chat_type = chat_type_override or get_chat_type(chat)
+
+    # 1️⃣ استخراج الروابط من النص + الأزرار
+    links = extract_links_from_message(message)
+
+    for link in links:
+        save_link(
+            url=link,
+            platform=None,
+            source_account=account_name,
+            chat_type=chat_type,
+            chat_id=str(message.chat_id),
+            message_date=message.date
+        )
+
+    # 2️⃣ استخراج الروابط من الملفات (PDF / DOCX)
+    if message.file:
+        try:
+            file_links = await extract_links_from_file(
+                client=client,
+                message=message
+            )
+            for link in file_links:
+                save_link(
+                    url=link,
+                    platform=None,
+                    source_account=account_name,
+                    chat_type=chat_type,
+                    chat_id=str(message.chat_id),
+                    message_date=message.date
+                )
+        except Exception as e:
+            logger.error(f"File extraction error: {e}")
+
+
+# ======================
+# Helpers
+# ======================
+
+def get_chat_type(entity) -> str:
+    cls = entity.__class__.__name__.lower()
+    if "channel" in cls:
+        return "channel"
+    if "chat" in cls:
+        return "group"
+    return "private"
