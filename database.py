@@ -1,6 +1,9 @@
 import sqlite3
 import os
+import shutil
+import zipfile
 from typing import Dict, List, Tuple
+from datetime import datetime
 
 from config import DATABASE_PATH
 
@@ -249,3 +252,69 @@ def export_links(platform: str) -> str | None:
             f.write(url + "\n")
 
     return path
+
+
+# ======================
+# ✅ Backup System (NEW)
+# ======================
+
+def create_backup_zip(max_keep: int = 15) -> str | None:
+    """
+    إنشاء نسخة احتياطية ZIP تشمل:
+    - DATABASE_PATH (مثل links.db)
+    - مجلد exports/ (إذا موجود)
+
+    ويرجع مسار ملف الـ backup النهائي.
+
+    max_keep: عدد النسخ التي نحتفظ بها في backups/
+    """
+    # تأكد أن قاعدة البيانات موجودة
+    if not os.path.exists(DATABASE_PATH):
+        return None
+
+    os.makedirs("backups", exist_ok=True)
+
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    backup_name = f"backup_{ts}.zip"
+    backup_path = os.path.join("backups", backup_name)
+
+    with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as z:
+        # 1) DB
+        z.write(DATABASE_PATH, arcname=os.path.basename(DATABASE_PATH))
+
+        # 2) exports folder
+        if os.path.exists("exports") and os.path.isdir("exports"):
+            for root, _, files in os.walk("exports"):
+                for f in files:
+                    full_path = os.path.join(root, f)
+                    arc = os.path.relpath(full_path, start=".")
+                    z.write(full_path, arcname=arc)
+
+    # تنظيف النسخ القديمة
+    _cleanup_old_backups(max_keep=max_keep)
+
+    return backup_path
+
+
+def _cleanup_old_backups(max_keep: int = 15):
+    """
+    يحذف أقدم النسخ في backups/ ويحتفظ بآخر max_keep فقط
+    """
+    if not os.path.exists("backups"):
+        return
+
+    files = []
+    for f in os.listdir("backups"):
+        if f.lower().endswith(".zip"):
+            full = os.path.join("backups", f)
+            files.append(full)
+
+    # ترتيب حسب وقت التعديل
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    # حذف الزائد
+    for old in files[max_keep:]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
