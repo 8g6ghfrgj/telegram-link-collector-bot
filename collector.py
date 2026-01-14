@@ -12,8 +12,7 @@ from session_manager import get_all_sessions
 from database import save_link
 from link_utils import (
     extract_links_from_message,
-    classify_platform,
-    filter_and_classify_link,   # ✅ إضافة فقط
+    filter_and_classify_link,
 )
 from file_extractors import extract_links_from_file
 
@@ -31,8 +30,12 @@ _clients: List[TelegramClient] = []
 _collecting: bool = False
 _stop_event = asyncio.Event()
 
-# ✅ NEW: Collection start time (for 60 days WhatsApp restriction)
+# ✅ وقت بدء الجمع (لشرط 60 يوم واتساب)
 _collect_started_at_utc: datetime | None = None
+
+# ✅ لمنع جمع أكثر من رابط رسالة واحد لكل مجموعة/قناة
+# key = chat_id
+_collected_one_tg_message_link_per_chat: set[str] = set()
 
 
 # ======================
@@ -70,8 +73,11 @@ async def start_collection():
         logger.warning("No sessions found.")
         return
 
-    # ✅ NEW: Save start time (UTC) when user pressed "Start Collect"
+    # ✅ سجل وقت البداية (UTC) عند الضغط على زر بدء الجمع
     _collect_started_at_utc = datetime.now(timezone.utc)
+
+    # ✅ Reset limit set
+    _collected_one_tg_message_link_per_chat.clear()
 
     _collecting = True
     _stop_event.clear()
@@ -173,7 +179,7 @@ async def collect_old_messages(client: TelegramClient, account_name: str):
 
 
 # ======================
-# Message Processing
+# Date Helpers
 # ======================
 
 def _to_utc(dt: datetime) -> datetime:
@@ -198,15 +204,44 @@ def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool
         return False
 
     if not _collect_started_at_utc:
-        # لو لأي سبب ما تم ضبط وقت البداية، لا نمنع (fail-open)
+        # لو لأي سبب ما تم ضبط وقت البداية، لا نمنع
         return False
 
     msg_date_utc = _to_utc(message_date)
     cutoff = _collect_started_at_utc - timedelta(days=60)
 
-    # لو الرسالة أقدم من 60 يوم => تجاهلها
+    # الرسائل الأقدم من 60 يوم لا نأخذ روابط واتساب منها
     return msg_date_utc < cutoff
 
+
+# ======================
+# Telegram Message Link Limiter
+# ======================
+
+def _should_skip_tg_message_link(chat_id: int | None, platform: str) -> bool:
+    """
+    ✅ شرط تيليجرام:
+    platform == telegram_message
+    اجمع رابط رسالة واحد فقط من كل مجموعة/قناة
+    """
+    if platform != "telegram_message":
+        return False
+
+    if chat_id is None:
+        return False
+
+    key = str(chat_id)
+    if key in _collected_one_tg_message_link_per_chat:
+        return True
+
+    # أول مرة نشوف رابط رسالة من هذا الشات => نسمح ونقفل بعده
+    _collected_one_tg_message_link_per_chat.add(key)
+    return False
+
+
+# ======================
+# Message Processing
+# ======================
 
 async def process_message(
     message: Message,
@@ -226,8 +261,9 @@ async def process_message(
     if not message:
         return
 
+    # ملاحظة: هذه فقط لمعرفة النوع، لا نستخدمه في الحفظ لأنه يجي من التصنيف
     chat = await message.get_chat()
-    _ = chat_type_override or get_chat_type(chat)  # لم نعد نستخدمه للحفظ
+    _ = chat_type_override or get_chat_type(chat)
 
     # ======================
     # 1️⃣ روابط النص + الأزرار
@@ -242,15 +278,19 @@ async def process_message(
 
         platform, link_chat_type = classified
 
-        # ✅ NEW: WhatsApp 60-day restriction
+        # ✅ WhatsApp 60-day restriction
         if _should_skip_whatsapp_by_date(message.date, platform):
+            continue
+
+        # ✅ Telegram message links restriction: only 1 per chat
+        if _should_skip_tg_message_link(message.chat_id, platform):
             continue
 
         save_link(
             url=link,
             platform=platform,
             source_account=account_name,
-            chat_type=link_chat_type,  # ✅ group / channel
+            chat_type=link_chat_type,  # ✅ group / channel / message / other
             chat_id=str(message.chat_id),
             message_date=message.date
         )
@@ -273,8 +313,12 @@ async def process_message(
 
                 platform, link_chat_type = classified
 
-                # ✅ NEW: WhatsApp 60-day restriction
+                # ✅ WhatsApp 60-day restriction
                 if _should_skip_whatsapp_by_date(message.date, platform):
+                    continue
+
+                # ✅ Telegram message links restriction: only 1 per chat
+                if _should_skip_tg_message_link(message.chat_id, platform):
                     continue
 
                 save_link(
