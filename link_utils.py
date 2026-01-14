@@ -17,13 +17,13 @@ URL_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# ✅ NEW: link patterns بدون http مثل www.example.com
+# روابط بدون http مثل www.example.com
 BARE_URL_REGEX = re.compile(
     r"((?:www\.)[^\s<>\"]+)",
     re.IGNORECASE
 )
 
-# ✅ NEW: domains with no scheme (example.com/path)
+# دومين بدون scheme: example.com/path
 DOMAIN_URL_REGEX = re.compile(
     r"((?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>\"]*)?)",
     re.IGNORECASE
@@ -31,7 +31,7 @@ DOMAIN_URL_REGEX = re.compile(
 
 
 # ======================
-# أنماط المنصات (القديمة - لا نلمسها)
+# أنماط المنصات
 # ======================
 
 PLATFORM_PATTERNS = {
@@ -43,22 +43,25 @@ PLATFORM_PATTERNS = {
 }
 
 
+# ======================
+# URL Normalize
+# ======================
+
 def _normalize_url(u: str) -> str:
     """
-    ✅ توحيد الرابط:
-    - لو بدأ بـ www. نحوله https://www...
-    - لو رابط دومين بدون scheme نحوله https://
+    توحيد الرابط:
+    - لو بدأ بـ www. => https://www...
+    - لو دومين بدون scheme => https://
     """
     if not u:
         return u
+
     u = u.strip()
 
     if u.startswith("www."):
         return "https://" + u
 
-    # لو شكله دومين بدون http
     if not u.startswith("http://") and not u.startswith("https://"):
-        # نتأكد أنه مو شيء عشوائي
         if "." in u and " " not in u:
             return "https://" + u
 
@@ -66,17 +69,16 @@ def _normalize_url(u: str) -> str:
 
 
 # ======================
-# استخراج الروابط من الرسالة (✅ تعديل شامل)
+# استخراج الروابط من الرسالة
 # ======================
 
 def extract_links_from_message(message: Message) -> List[str]:
     """
     استخراج الروابط من:
     - نص الرسالة
-    - الكابتشن
     - الروابط المخفية داخل entities (TextUrl)
-    - الروابط غير المكتملة (بدون https مثل www.)
-    - أزرار Inline
+    - روابط بدون https
+    - أزرار Inline (اضغط/مشبك)
     """
     links: Set[str] = set()
 
@@ -87,29 +89,27 @@ def extract_links_from_message(message: Message) -> List[str]:
         for u in URL_REGEX.findall(text):
             links.add(_normalize_url(u))
 
-    # 2) روابط بدون http مثل www.example.com
+    # 2) روابط www.
     if text:
         for u in BARE_URL_REGEX.findall(text):
             links.add(_normalize_url(u))
 
-    # 3) روابط دومين بدون scheme (example.com/xxx)
-    # ملاحظة: هذا قد يلتقط أشياء ليست روابط أحياناً، لكن مفيد جداً للتعليقات
+    # 3) دومين بدون scheme
     if text:
         for u in DOMAIN_URL_REGEX.findall(text):
-            # استثني كلمات قصيرة/ملخبطة
             if len(u) >= 6:
                 links.add(_normalize_url(u))
 
-    # 4) ✅ الروابط المخفية داخل entities
-    # مثل: اضغط هنا (الرابط مخفي)
+    # 4) الروابط المخفية داخل entities
     if getattr(message, "entities", None) and text:
         for ent in message.entities:
-            # رابط مخفي
+
+            # رابط مخفي: "اضغط هنا" والرابط داخلها
             if isinstance(ent, MessageEntityTextUrl):
                 if getattr(ent, "url", None):
                     links.add(_normalize_url(ent.url))
 
-            # رابط “مرئي” ولكن قد يكون بدون https
+            # رابط مكتوب وقد يكون بدون https
             elif isinstance(ent, MessageEntityUrl):
                 try:
                     start = ent.offset
@@ -130,7 +130,7 @@ def extract_links_from_message(message: Message) -> List[str]:
 
 
 # ======================
-# تصنيف المنصة (كما هو)
+# تصنيف المنصة (عام)
 # ======================
 
 def classify_platform(url: str) -> str:
@@ -141,12 +141,19 @@ def classify_platform(url: str) -> str:
 
 
 # =========================================================
-# ================== الإضافات الجديدة فقط ==================
+# Telegram / WhatsApp classification & filtering
 # =========================================================
 
 # -------- Telegram --------
 TG_GROUP_REGEX = re.compile(r"https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+", re.I)
+
+# قناة/مجموعة عامة
 TG_CHANNEL_REGEX = re.compile(r"https?://t\.me/[A-Za-z0-9_]+", re.I)
+
+# ✅ NEW: Telegram Message Link (عام + خاص)
+# - https://t.me/name/123
+# - https://t.me/c/123456789/55
+TG_MESSAGE_REGEX = re.compile(r"https?://t\.me/(?:c/\d+|[A-Za-z0-9_]+)/\d+", re.I)
 
 # -------- WhatsApp --------
 WA_GROUP_REGEX = re.compile(r"https?://chat\.whatsapp\.com/[A-Za-z0-9]+", re.I)
@@ -161,14 +168,21 @@ def filter_and_classify_link(url: str):
         (platform, chat_type)
         أو None إذا الرابط مرفوض
     """
-
     url = _normalize_url(url)
 
     # ===== Telegram =====
     if "t.me" in url:
+
+        # ✅ رابط رسالة
+        if TG_MESSAGE_REGEX.match(url):
+            # نرجعه كمنصة مستقلة عشان نقدر نطبق عليه "واحد فقط لكل مجموعة"
+            return ("telegram_message", "message")
+
+        # ✅ رابط دخول مجموعة
         if TG_GROUP_REGEX.match(url):
             return ("telegram", "group")
 
+        # ✅ قناة / مجموعة عامة
         if TG_CHANNEL_REGEX.match(url):
             return ("telegram", "channel")
 
