@@ -21,6 +21,8 @@ from session_manager import (
     add_session,
     get_all_sessions,
     delete_session,
+    disable_session,
+    enable_session,
 )
 from collector import (
     start_collection,
@@ -31,6 +33,7 @@ from database import (
     init_db,
     export_links,
     get_links_by_platform_and_type,
+    create_backup_zip,   # ✅ NEW
 )
 
 # ======================
@@ -46,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 20
 
+
 # ======================
 # Keyboards
 # ======================
@@ -54,10 +58,12 @@ def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة حساب", callback_data="add_account")],
         [InlineKeyboardButton("👤 عرض الحسابات", callback_data="list_accounts")],
+        [InlineKeyboardButton("⚠️ الحسابات المعطلة", callback_data="list_inactive_accounts")],
         [InlineKeyboardButton("▶️ بدء الجمع", callback_data="start_collect")],
         [InlineKeyboardButton("⏹ إيقاف الجمع", callback_data="stop_collect")],
         [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")],
         [InlineKeyboardButton("📤 تصدير الروابط", callback_data="export_links")],
+        [InlineKeyboardButton("📦 نسخة احتياطية الآن", callback_data="backup_now")],
     ])
 
 
@@ -124,6 +130,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================
+# Internal Helpers
+# ======================
+
+async def _send_backup_to_user(query):
+    """
+    ينشئ Backup ZIP ويرسله للمستخدم
+    """
+    backup_path = create_backup_zip(max_keep=15)
+
+    if not backup_path or not os.path.exists(backup_path):
+        await query.message.reply_text("❌ تعذر إنشاء نسخة احتياطية (لا يوجد قاعدة بيانات).")
+        return
+
+    with open(backup_path, "rb") as f:
+        await query.message.reply_document(
+            document=f,
+            filename=os.path.basename(backup_path),
+            caption="✅ نسخة احتياطية للروابط + exports"
+        )
+
+
+# ======================
 # Callbacks
 # ======================
 
@@ -138,16 +166,20 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_session"] = True
         await query.message.reply_text("📥 أرسل Session String الآن:")
 
-    # 👤 عرض الحسابات
+    # 👤 عرض الحسابات (الفعالة)
     elif data == "list_accounts":
-        sessions = get_all_sessions()
+        sessions = get_all_sessions(include_inactive=False)
         if not sessions:
-            await query.message.reply_text("❌ لا يوجد حسابات مضافة.")
+            await query.message.reply_text("❌ لا يوجد حسابات فعالة.")
             return
 
         buttons = []
         for s in sessions:
             buttons.append([
+                InlineKeyboardButton(
+                    f"🛑 تعطيل {s['name']}",
+                    callback_data=f"disable_account:{s['id']}"
+                ),
                 InlineKeyboardButton(
                     f"🗑 حذف {s['name']}",
                     callback_data=f"delete_account:{s['id']}"
@@ -155,14 +187,52 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
         await query.message.reply_text(
-            "👤 الحسابات المضافة:",
+            "👤 الحسابات الفعالة:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
+    # ⚠️ الحسابات المعطلة
+    elif data == "list_inactive_accounts":
+        sessions = get_all_sessions(include_inactive=True)
+        inactive = [s for s in sessions if int(s.get("active", 1)) == 0]
+
+        if not inactive:
+            await query.message.reply_text("✅ لا توجد حسابات معطلة حالياً.")
+            return
+
+        buttons = []
+        for s in inactive:
+            reason = s.get("disabled_reason") or "بدون سبب"
+            buttons.append([
+                InlineKeyboardButton(
+                    f"✅ تفعيل {s['name']}",
+                    callback_data=f"enable_account:{s['id']}"
+                )
+            ])
+            await query.message.reply_text(f"⚠️ {s['name']}\nالسبب: {reason}")
+
+        await query.message.reply_text(
+            "⚠️ الحسابات المعطلة:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    # تعطيل حساب
+    elif data.startswith("disable_account:"):
+        session_id = int(data.split(":")[1])
+        disable_session(session_id, reason="Disabled manually from bot UI")
+        await query.message.reply_text("✅ تم تعطيل الحساب (بدون حذف).")
+
+    # تفعيل حساب
+    elif data.startswith("enable_account:"):
+        session_id = int(data.split(":")[1])
+        enable_session(session_id)
+        await query.message.reply_text("✅ تم تفعيل الحساب.")
+
+    # حذف حساب (يدوي فقط)
     elif data.startswith("delete_account:"):
         session_id = int(data.split(":")[1])
         delete_session(session_id)
-        await query.message.reply_text("✅ تم حذف الحساب.")
+        await query.message.reply_text("✅ تم حذف الحساب نهائياً.")
 
     # ▶️ بدء الجمع
     elif data == "start_collect":
@@ -177,6 +247,17 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "stop_collect":
         stop_collection()
         await query.message.reply_text("⏹ تم إيقاف الاستماع.")
+
+        # ✅ NEW: backup automatically on stop (مفيد جداً على Render)
+        try:
+            await _send_backup_to_user(query)
+        except Exception as e:
+            logger.error(f"Backup failed on stop_collect: {e}")
+
+    # 📦 نسخة احتياطية الآن
+    elif data == "backup_now":
+        await query.message.reply_text("⏳ جاري إنشاء النسخة الاحتياطية...")
+        await _send_backup_to_user(query)
 
     # 📊 عرض الروابط
     elif data == "view_links":
