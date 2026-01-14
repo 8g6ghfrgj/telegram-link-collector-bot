@@ -3,7 +3,8 @@ import logging
 from typing import List
 from datetime import datetime, timezone, timedelta
 
-import requests
+import urllib.parse
+import urllib.request
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -41,6 +42,11 @@ _collected_one_tg_message_link_per_chat: set[str] = set()
 # ✅ تفعيل الإشعارات فقط بعد انتهاء جمع التاريخ
 _notifications_enabled: bool = False
 
+# ✅ NEW: Track completion of old-history scan across ALL accounts
+_history_total_clients: int = 0
+_history_finished_clients: int = 0
+_history_lock = asyncio.Lock()
+
 
 # ======================
 # Public API
@@ -66,7 +72,14 @@ async def start_collection():
     تشغيل كل Sessions
     وبدء جمع التاريخ + الاستماع للجديد
     """
-    global _collecting, _clients, _collect_started_at_utc, _notifications_enabled
+    global (
+        _collecting,
+        _clients,
+        _collect_started_at_utc,
+        _notifications_enabled,
+        _history_total_clients,
+        _history_finished_clients,
+    )
 
     if _collecting:
         logger.info("Collection already running.")
@@ -83,8 +96,12 @@ async def start_collection():
     # ✅ Reset limiter
     _collected_one_tg_message_link_per_chat.clear()
 
-    # ✅ أثناء جمع التاريخ: لا ترسل إشعارات
+    # ✅ أثناء جمع التاريخ: لا إشعارات
     _notifications_enabled = False
+
+    # ✅ initialize counters
+    _history_total_clients = len(sessions)
+    _history_finished_clients = 0
 
     _collecting = True
     _stop_event.clear()
@@ -101,23 +118,28 @@ async def start_collection():
 
 
 # ======================
-# Notifications
+# Notifications (urllib)
 # ======================
 
 def _safe_send_admin_message(text: str):
+    """
+    إرسال رسالة للأدمن باستخدام Bot API بدون requests
+    """
     if not BOT_TOKEN or not ADMIN_CHAT_ID:
         return
 
     try:
-        requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            params={
-                "chat_id": ADMIN_CHAT_ID,
-                "text": text,
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({
+            "chat_id": ADMIN_CHAT_ID,
+            "text": text,
+            "disable_web_page_preview": True,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+
     except Exception:
         pass
 
@@ -130,6 +152,9 @@ def notify_admin_new_link(
     chat_id: str,
     message_date: datetime | None = None
 ):
+    """
+    إشعار فوري عند إضافة رابط جديد (غير مكرر)
+    """
     try:
         dt = ""
         if message_date:
@@ -150,6 +175,7 @@ def notify_admin_new_link(
             text += f"🕒 التاريخ: {dt}\n"
 
         _safe_send_admin_message(text)
+
     except Exception:
         pass
 
@@ -164,8 +190,6 @@ async def run_client(session_data: dict):
     - قراءة كل التاريخ
     - ثم الاستماع للجديد
     """
-    global _notifications_enabled
-
     session_string = session_data["session"]
     account_name = session_data["name"]
 
@@ -201,16 +225,36 @@ async def run_client(session_data: dict):
 
     await collect_old_messages(client, account_name)
 
-    # ✅ بعد ما يخلص التاريخ نفعّل الإشعارات (مرة واحدة فقط)
-    if not _notifications_enabled:
-        _notifications_enabled = True
-        _safe_send_admin_message("✅ تم الانتهاء من جمع الروابط القديمة. الآن سيتم إرسال الروابط الجديدة فقط.")
+    # ✅ Mark history scan done for this account
+    await _mark_history_finished(account_name)
 
     # بعد الانتهاء من التاريخ نبقى فقط على الاستماع
     await _stop_event.wait()
 
     await client.disconnect()
     logger.info(f"Client stopped: {account_name}")
+
+
+async def _mark_history_finished(account_name: str):
+    """
+    ✅ This guarantees notifications will only start after ALL sessions finish.
+    """
+    global _history_finished_clients, _notifications_enabled
+
+    async with _history_lock:
+        _history_finished_clients += 1
+        logger.info(
+            f"History finished for {account_name} "
+            f"({_history_finished_clients}/{_history_total_clients})"
+        )
+
+        # ✅ Only when ALL clients finished history
+        if (_history_finished_clients >= _history_total_clients) and (not _notifications_enabled):
+            _notifications_enabled = True
+            _safe_send_admin_message(
+                "✅ تم الانتهاء من جمع الروابط القديمة في جميع الحسابات.\n"
+                "🔔 الآن سيتم إرسال الروابط الجديدة فقط."
+            )
 
 
 # ======================
@@ -303,7 +347,7 @@ async def process_message(
     - النص + المخفي + الأزرار
     - الملفات PDF/DOCX
     ثم حفظها بدون تكرار
-    + إشعار فقط للروابط الجديدة بعد اكتمال جمع القديم
+    + إشعار فقط للروابط الجديدة بعد اكتمال جمع القديم لكل الحسابات
     """
     global _notifications_enabled
 
@@ -322,11 +366,11 @@ async def process_message(
 
         platform, link_chat_type = classified
 
-        # ✅ WhatsApp 60 days
+        # ✅ WhatsApp 60 days restriction
         if _should_skip_whatsapp_by_date(message.date, platform):
             continue
 
-        # ✅ only 1 TG message link per chat
+        # ✅ Telegram message link restriction
         if _should_skip_tg_message_link(message.chat_id, platform):
             continue
 
