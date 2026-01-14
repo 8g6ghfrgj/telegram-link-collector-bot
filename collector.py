@@ -36,11 +36,10 @@ _stop_event = asyncio.Event()
 _collect_started_at_utc: datetime | None = None
 
 # ✅ لمنع جمع أكثر من رابط رسالة واحد لكل مجموعة/قناة
-# key = chat_id
 _collected_one_tg_message_link_per_chat: set[str] = set()
 
-# ✅ لمنع إرسال إشعارين متتاليين بسرعة (اختياري)
-_last_notify_at: float = 0.0
+# ✅ تفعيل الإشعارات فقط بعد انتهاء جمع التاريخ
+_notifications_enabled: bool = False
 
 
 # ======================
@@ -67,7 +66,7 @@ async def start_collection():
     تشغيل كل Sessions
     وبدء جمع التاريخ + الاستماع للجديد
     """
-    global _collecting, _clients, _collect_started_at_utc
+    global _collecting, _clients, _collect_started_at_utc, _notifications_enabled
 
     if _collecting:
         logger.info("Collection already running.")
@@ -81,8 +80,11 @@ async def start_collection():
     # ✅ سجل وقت البداية (UTC) عند الضغط على زر بدء الجمع
     _collect_started_at_utc = datetime.now(timezone.utc)
 
-    # ✅ Reset limit set
+    # ✅ Reset limiter
     _collected_one_tg_message_link_per_chat.clear()
+
+    # ✅ أثناء جمع التاريخ: لا ترسل إشعارات
+    _notifications_enabled = False
 
     _collecting = True
     _stop_event.clear()
@@ -103,10 +105,6 @@ async def start_collection():
 # ======================
 
 def _safe_send_admin_message(text: str):
-    """
-    إرسال رسالة للأدمن عن طريق Bot API
-    (sync - لكن سريع وبـ timeout ولا يأثر على التجميع)
-    """
     if not BOT_TOKEN or not ADMIN_CHAT_ID:
         return
 
@@ -132,9 +130,6 @@ def notify_admin_new_link(
     chat_id: str,
     message_date: datetime | None = None
 ):
-    """
-    إشعار فوري عند إضافة رابط جديد فقط (غير مكرر)
-    """
     try:
         dt = ""
         if message_date:
@@ -155,9 +150,7 @@ def notify_admin_new_link(
             text += f"🕒 التاريخ: {dt}\n"
 
         _safe_send_admin_message(text)
-
     except Exception:
-        # لا نكسر التجميع
         pass
 
 
@@ -171,6 +164,8 @@ async def run_client(session_data: dict):
     - قراءة كل التاريخ
     - ثم الاستماع للجديد
     """
+    global _notifications_enabled
+
     session_string = session_data["session"]
     account_name = session_data["name"]
 
@@ -206,6 +201,11 @@ async def run_client(session_data: dict):
 
     await collect_old_messages(client, account_name)
 
+    # ✅ بعد ما يخلص التاريخ نفعّل الإشعارات (مرة واحدة فقط)
+    if not _notifications_enabled:
+        _notifications_enabled = True
+        _safe_send_admin_message("✅ تم الانتهاء من جمع الروابط القديمة. الآن سيتم إرسال الروابط الجديدة فقط.")
+
     # بعد الانتهاء من التاريخ نبقى فقط على الاستماع
     await _stop_event.wait()
 
@@ -219,15 +219,10 @@ async def run_client(session_data: dict):
 
 async def collect_old_messages(client: TelegramClient, account_name: str):
     """
-    المرور على:
-    - كل القنوات
-    - كل الجروبات
-    - كل المحادثات الخاصة
-    وقراءة كل الرسائل من أول رسالة
+    المرور على كل القنوات/الجروبات/الخاص وقراءة التاريخ
     """
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
-        chat_type = get_chat_type(entity)
 
         try:
             async for message in client.iter_messages(entity, reverse=True):
@@ -237,8 +232,7 @@ async def collect_old_messages(client: TelegramClient, account_name: str):
                 await process_message(
                     message=message,
                     account_name=account_name,
-                    client=client,
-                    chat_type_override=chat_type
+                    client=client
                 )
 
         except Exception as e:
@@ -246,13 +240,10 @@ async def collect_old_messages(client: TelegramClient, account_name: str):
 
 
 # ======================
-# Date Helpers
+# Helpers
 # ======================
 
 def _to_utc(dt: datetime) -> datetime:
-    """
-    ضمان أن التاريخ UTC timezone-aware عشان المقارنة تكون صحيحة
-    """
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -263,7 +254,7 @@ def _to_utc(dt: datetime) -> datetime:
 def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool:
     """
     ✅ شرط واتساب:
-    اجمع روابط واتساب فقط من آخر 60 يوم من وقت بدء الجمع
+    نجمع روابط واتساب فقط من آخر 60 يوم من وقت بدء الجمع
     """
     global _collect_started_at_utc
 
@@ -279,15 +270,10 @@ def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool
     return msg_date_utc < cutoff
 
 
-# ======================
-# Telegram Message Link Limiter
-# ======================
-
 def _should_skip_tg_message_link(chat_id: int | None, platform: str) -> bool:
     """
-    ✅ شرط تيليجرام:
-    platform == telegram_message
-    اجمع رابط رسالة واحد فقط من كل مجموعة/قناة
+    ✅ تيليجرام:
+    اجمع رابط رسالة واحد فقط لكل مجموعة/قناة
     """
     if platform != "telegram_message":
         return False
@@ -311,32 +297,22 @@ async def process_message(
     message: Message,
     account_name: str,
     client: TelegramClient,
-    chat_type_override: str | None = None
 ):
     """
-    استخراج كل الروابط من الرسالة:
-    - النص
-    - الروابط المخفية
-    - الأزرار
-    - الملفات (PDF / DOCX)
+    استخراج الروابط من:
+    - النص + المخفي + الأزرار
+    - الملفات PDF/DOCX
     ثم حفظها بدون تكرار
-    + إشعار فوري للأدمن عند حفظ رابط جديد
+    + إشعار فقط للروابط الجديدة بعد اكتمال جمع القديم
     """
+    global _notifications_enabled
 
     if not message:
-       
-
-    # لا نستخدم chat_type_override في الحفظ، فقط للمعلومة/التوسع
-    try:
-        chat = await message.get_chat()
-        _ = chat_type_override or get_chat_type(chat)
-    except Exception:
-        pass
+        return
 
     # ======================
-    # 1️⃣ روابط النص + الأزرار
+    # 1) روابط النص + الأزرار
     # ======================
-
     links = extract_links_from_message(message)
 
     for link in links:
@@ -346,15 +322,14 @@ async def process_message(
 
         platform, link_chat_type = classified
 
-        # ✅ WhatsApp 60-day restriction
+        # ✅ WhatsApp 60 days
         if _should_skip_whatsapp_by_date(message.date, platform):
             continue
 
-        # ✅ Telegram message link: only one per chat
+        # ✅ only 1 TG message link per chat
         if _should_skip_tg_message_link(message.chat_id, platform):
             continue
 
-        # ✅ Save + notify only if NEW
         is_new = save_link(
             url=link,
             platform=platform,
@@ -364,7 +339,7 @@ async def process_message(
             message_date=message.date
         )
 
-        if is_new:
+        if is_new and _notifications_enabled:
             notify_admin_new_link(
                 url=link,
                 platform=platform,
@@ -375,9 +350,8 @@ async def process_message(
             )
 
     # ======================
-    # 2️⃣ روابط الملفات (PDF / DOCX)
+    # 2) روابط الملفات
     # ======================
-
     if message.file:
         try:
             file_links = await extract_links_from_file(
@@ -392,11 +366,9 @@ async def process_message(
 
                 platform, link_chat_type = classified
 
-                # ✅ WhatsApp 60-day restriction
                 if _should_skip_whatsapp_by_date(message.date, platform):
                     continue
 
-                # ✅ Telegram message link: only one per chat
                 if _should_skip_tg_message_link(message.chat_id, platform):
                     continue
 
@@ -409,7 +381,7 @@ async def process_message(
                     message_date=message.date
                 )
 
-                if is_new:
+                if is_new and _notifications_enabled:
                     notify_admin_new_link(
                         url=link,
                         platform=platform,
@@ -421,21 +393,3 @@ async def process_message(
 
         except Exception as e:
             logger.error(f"File extraction error: {e}")
-
-
-# ======================
-# Helpers
-# ======================
-
-def get_chat_type(entity) -> str:
-    """
-    تحديد نوع المحادثة:
-    channel / group / private
-    """
-    cls = entity.__class__.__name__.lower()
-
-    if "channel" in cls:
-        return "channel"
-    if "chat" in cls:
-        return "group"
-    return "private"
