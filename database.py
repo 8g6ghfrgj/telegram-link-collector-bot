@@ -1,6 +1,5 @@
 import sqlite3
 import os
-import shutil
 import zipfile
 from typing import Dict, List, Tuple
 from datetime import datetime
@@ -78,12 +77,16 @@ def save_link(
     chat_type: str,
     chat_id: str,
     message_date
-):
+) -> bool:
     """
     حفظ الرابط مرة واحدة فقط مهما تكرر
+
+    Returns:
+        True  => تم حفظ الرابط (جديد)
+        False => الرابط موجود مسبقاً
     """
     if not url:
-        return
+        return False
 
     conn = get_connection()
     cur = conn.cursor()
@@ -105,6 +108,10 @@ def save_link(
             )
         )
         conn.commit()
+
+        # ✅ إذا تمت الإضافة فعلاً يكون rowcount = 1
+        return cur.rowcount == 1
+
     finally:
         conn.close()
 
@@ -187,11 +194,10 @@ def get_links_by_platform_and_type(
 ) -> List[Tuple[str, str]]:
     """
     جلب الروابط حسب:
-    - المنصة (telegram / whatsapp)
-    - النوع (group / channel)
+    - المنصة (telegram / whatsapp / telegram_message ...)
+    - النوع (group / channel / message / other)
     مع Pagination
     """
-
     conn = get_connection()
     cur = conn.cursor()
 
@@ -255,20 +261,19 @@ def export_links(platform: str) -> str | None:
 
 
 # ======================
-# ✅ Backup System (NEW)
+# ✅ Backup System
 # ======================
 
 def create_backup_zip(max_keep: int = 15) -> str | None:
     """
     إنشاء نسخة احتياطية ZIP تشمل:
-    - DATABASE_PATH (مثل links.db)
+    - DATABASE_PATH (مثل data/database.db)
     - مجلد exports/ (إذا موجود)
 
     ويرجع مسار ملف الـ backup النهائي.
 
     max_keep: عدد النسخ التي نحتفظ بها في backups/
     """
-    # تأكد أن قاعدة البيانات موجودة
     if not os.path.exists(DATABASE_PATH):
         return None
 
@@ -290,7 +295,6 @@ def create_backup_zip(max_keep: int = 15) -> str | None:
                     arc = os.path.relpath(full_path, start=".")
                     z.write(full_path, arcname=arc)
 
-    # تنظيف النسخ القديمة
     _cleanup_old_backups(max_keep=max_keep)
 
     return backup_path
@@ -306,13 +310,11 @@ def _cleanup_old_backups(max_keep: int = 15):
     files = []
     for f in os.listdir("backups"):
         if f.lower().endswith(".zip"):
-            full = os.path.join("backups", f)
-            files.append(full)
+            files.append(os.path.join("backups", f))
 
-    # ترتيب حسب وقت التعديل
+    # newest first
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-    # حذف الزائد
     for old in files[max_keep:]:
         try:
             os.remove(old)
