@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import List
+from datetime import datetime, timezone, timedelta
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -30,6 +31,9 @@ _clients: List[TelegramClient] = []
 _collecting: bool = False
 _stop_event = asyncio.Event()
 
+# ✅ NEW: Collection start time (for 60 days WhatsApp restriction)
+_collect_started_at_utc: datetime | None = None
+
 
 # ======================
 # Public API
@@ -55,7 +59,7 @@ async def start_collection():
     تشغيل كل Sessions
     وبدء جمع التاريخ + الاستماع للجديد
     """
-    global _collecting, _clients
+    global _collecting, _clients, _collect_started_at_utc
 
     if _collecting:
         logger.info("Collection already running.")
@@ -65,6 +69,9 @@ async def start_collection():
     if not sessions:
         logger.warning("No sessions found.")
         return
+
+    # ✅ NEW: Save start time (UTC) when user pressed "Start Collect"
+    _collect_started_at_utc = datetime.now(timezone.utc)
 
     _collecting = True
     _stop_event.clear()
@@ -169,6 +176,38 @@ async def collect_old_messages(client: TelegramClient, account_name: str):
 # Message Processing
 # ======================
 
+def _to_utc(dt: datetime) -> datetime:
+    """
+    ضمان أن التاريخ UTC timezone-aware عشان المقارنة تكون صحيحة
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool:
+    """
+    ✅ شرط واتساب:
+    اجمع روابط واتساب فقط من آخر 60 يوم من وقت بدء الجمع
+    """
+    global _collect_started_at_utc
+
+    if platform != "whatsapp":
+        return False
+
+    if not _collect_started_at_utc:
+        # لو لأي سبب ما تم ضبط وقت البداية، لا نمنع (fail-open)
+        return False
+
+    msg_date_utc = _to_utc(message_date)
+    cutoff = _collect_started_at_utc - timedelta(days=60)
+
+    # لو الرسالة أقدم من 60 يوم => تجاهلها
+    return msg_date_utc < cutoff
+
+
 async def process_message(
     message: Message,
     account_name: str,
@@ -203,6 +242,10 @@ async def process_message(
 
         platform, link_chat_type = classified
 
+        # ✅ NEW: WhatsApp 60-day restriction
+        if _should_skip_whatsapp_by_date(message.date, platform):
+            continue
+
         save_link(
             url=link,
             platform=platform,
@@ -229,6 +272,10 @@ async def process_message(
                     continue
 
                 platform, link_chat_type = classified
+
+                # ✅ NEW: WhatsApp 60-day restriction
+                if _should_skip_whatsapp_by_date(message.date, platform):
+                    continue
 
                 save_link(
                     url=link,
