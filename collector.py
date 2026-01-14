@@ -39,10 +39,10 @@ _collect_started_at_utc: datetime | None = None
 # ✅ لمنع جمع أكثر من رابط رسالة واحد لكل مجموعة/قناة
 _collected_one_tg_message_link_per_chat: set[str] = set()
 
-# ✅ تفعيل الإشعارات فقط بعد انتهاء جمع التاريخ
+# ✅ تفعيل الإشعارات فقط بعد انتهاء جمع التاريخ في جميع الحسابات
 _notifications_enabled: bool = False
 
-# ✅ NEW: Track completion of old-history scan across ALL accounts
+# ✅ Track completion across ALL accounts
 _history_total_clients: int = 0
 _history_finished_clients: int = 0
 _history_lock = asyncio.Lock()
@@ -72,14 +72,8 @@ async def start_collection():
     تشغيل كل Sessions
     وبدء جمع التاريخ + الاستماع للجديد
     """
-    global (
-        _collecting,
-        _clients,
-        _collect_started_at_utc,
-        _notifications_enabled,
-        _history_total_clients,
-        _history_finished_clients,
-    )
+    global _collecting, _clients, _collect_started_at_utc, _notifications_enabled
+    global _history_total_clients, _history_finished_clients
 
     if _collecting:
         logger.info("Collection already running.")
@@ -90,7 +84,7 @@ async def start_collection():
         logger.warning("No sessions found.")
         return
 
-    # ✅ سجل وقت البداية (UTC) عند الضغط على زر بدء الجمع
+    # ✅ سجل وقت البداية (UTC)
     _collect_started_at_utc = datetime.now(timezone.utc)
 
     # ✅ Reset limiter
@@ -99,7 +93,7 @@ async def start_collection():
     # ✅ أثناء جمع التاريخ: لا إشعارات
     _notifications_enabled = False
 
-    # ✅ initialize counters
+    # ✅ init counters
     _history_total_clients = len(sessions)
     _history_finished_clients = 0
 
@@ -107,14 +101,8 @@ async def start_collection():
     _stop_event.clear()
     _clients = []
 
-    tasks = []
-    for session in sessions:
-        tasks.append(run_client(session))
-
-    # تشغيل كل الحسابات معاً
+    tasks = [run_client(session) for session in sessions]
     await asyncio.gather(*tasks)
-
-    logger.info("Finished collecting old history.")
 
 
 # ======================
@@ -228,7 +216,7 @@ async def run_client(session_data: dict):
     # ✅ Mark history scan done for this account
     await _mark_history_finished(account_name)
 
-    # بعد الانتهاء من التاريخ نبقى فقط على الاستماع
+    # After history ends, just keep listening
     await _stop_event.wait()
 
     await client.disconnect()
@@ -237,7 +225,7 @@ async def run_client(session_data: dict):
 
 async def _mark_history_finished(account_name: str):
     """
-    ✅ This guarantees notifications will only start after ALL sessions finish.
+    ✅ Notifications are enabled ONLY after ALL sessions finish history.
     """
     global _history_finished_clients, _notifications_enabled
 
@@ -248,7 +236,6 @@ async def _mark_history_finished(account_name: str):
             f"({_history_finished_clients}/{_history_total_clients})"
         )
 
-        # ✅ Only when ALL clients finished history
         if (_history_finished_clients >= _history_total_clients) and (not _notifications_enabled):
             _notifications_enabled = True
             _safe_send_admin_message(
@@ -262,9 +249,6 @@ async def _mark_history_finished(account_name: str):
 # ======================
 
 async def collect_old_messages(client: TelegramClient, account_name: str):
-    """
-    المرور على كل القنوات/الجروبات/الخاص وقراءة التاريخ
-    """
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
 
@@ -296,10 +280,6 @@ def _to_utc(dt: datetime) -> datetime:
 
 
 def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool:
-    """
-    ✅ شرط واتساب:
-    نجمع روابط واتساب فقط من آخر 60 يوم من وقت بدء الجمع
-    """
     global _collect_started_at_utc
 
     if platform != "whatsapp":
@@ -315,10 +295,6 @@ def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool
 
 
 def _should_skip_tg_message_link(chat_id: int | None, platform: str) -> bool:
-    """
-    ✅ تيليجرام:
-    اجمع رابط رسالة واحد فقط لكل مجموعة/قناة
-    """
     if platform != "telegram_message":
         return False
 
@@ -342,21 +318,12 @@ async def process_message(
     account_name: str,
     client: TelegramClient,
 ):
-    """
-    استخراج الروابط من:
-    - النص + المخفي + الأزرار
-    - الملفات PDF/DOCX
-    ثم حفظها بدون تكرار
-    + إشعار فقط للروابط الجديدة بعد اكتمال جمع القديم لكل الحسابات
-    """
     global _notifications_enabled
 
     if not message:
         return
 
-    # ======================
-    # 1) روابط النص + الأزرار
-    # ======================
+    # 1) Text + Hidden + Buttons
     links = extract_links_from_message(message)
 
     for link in links:
@@ -366,11 +333,9 @@ async def process_message(
 
         platform, link_chat_type = classified
 
-        # ✅ WhatsApp 60 days restriction
         if _should_skip_whatsapp_by_date(message.date, platform):
             continue
 
-        # ✅ Telegram message link restriction
         if _should_skip_tg_message_link(message.chat_id, platform):
             continue
 
@@ -393,9 +358,7 @@ async def process_message(
                 message_date=message.date
             )
 
-    # ======================
-    # 2) روابط الملفات
-    # ======================
+    # 2) Files (PDF/DOCX)
     if message.file:
         try:
             file_links = await extract_links_from_file(
