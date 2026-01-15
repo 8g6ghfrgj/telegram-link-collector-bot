@@ -33,7 +33,7 @@ _clients: List[TelegramClient] = []
 _collecting: bool = False
 _stop_event = asyncio.Event()
 
-# ✅ وقت بدء الجمع (لشرط 60 يوم واتساب)
+# ✅ وقت بدء الجمع (لشروط 60 يوم)
 _collect_started_at_utc: datetime | None = None
 
 # ✅ لمنع جمع أكثر من رابط رسالة واحد لكل مجموعة/قناة
@@ -210,7 +210,6 @@ async def run_client(session_data: dict):
     # ======================
     # Read Old History
     # ======================
-
     await collect_old_messages(client, account_name)
 
     # ✅ Mark history scan done for this account
@@ -280,6 +279,10 @@ def _to_utc(dt: datetime) -> datetime:
 
 
 def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool:
+    """
+    ✅ شرط واتساب:
+    نجمع روابط واتساب فقط من آخر 60 يوم من وقت بدء الجمع
+    """
     global _collect_started_at_utc
 
     if platform != "whatsapp":
@@ -294,7 +297,27 @@ def _should_skip_whatsapp_by_date(message_date: datetime, platform: str) -> bool
     return msg_date_utc < cutoff
 
 
+def _should_skip_files_by_date(message_date: datetime) -> bool:
+    """
+    ✅ شرط الملفات:
+    نفحص ملفات PDF/DOCX فقط من آخر 60 يوم
+    """
+    global _collect_started_at_utc
+
+    if not _collect_started_at_utc or not message_date:
+        return False
+
+    msg_date_utc = _to_utc(message_date)
+    cutoff = _collect_started_at_utc - timedelta(days=60)
+
+    return msg_date_utc < cutoff
+
+
 def _should_skip_tg_message_link(chat_id: int | None, platform: str) -> bool:
+    """
+    ✅ تيليجرام:
+    اجمع رابط رسالة واحد فقط لكل مجموعة/قناة
+    """
     if platform != "telegram_message":
         return False
 
@@ -318,12 +341,21 @@ async def process_message(
     account_name: str,
     client: TelegramClient,
 ):
+    """
+    استخراج الروابط من:
+    - النص + المخفي + الأزرار
+    - الملفات PDF/DOCX (آخر 60 يوم فقط)
+    ثم حفظها بدون تكرار
+    + إشعار فقط للروابط الجديدة بعد اكتمال جمع القديم لكل الحسابات
+    """
     global _notifications_enabled
 
     if not message:
         return
 
+    # ======================
     # 1) Text + Hidden + Buttons
+    # ======================
     links = extract_links_from_message(message)
 
     for link in links:
@@ -333,9 +365,11 @@ async def process_message(
 
         platform, link_chat_type = classified
 
+        # ✅ WhatsApp 60 days restriction
         if _should_skip_whatsapp_by_date(message.date, platform):
             continue
 
+        # ✅ Telegram message link restriction
         if _should_skip_tg_message_link(message.chat_id, platform):
             continue
 
@@ -358,8 +392,15 @@ async def process_message(
                 message_date=message.date
             )
 
+    # ======================
     # 2) Files (PDF/DOCX)
+    # ✅ افحص الملفات فقط من آخر 60 يوم
+    # ======================
     if message.file:
+        # ✅ skip old files
+        if _should_skip_files_by_date(message.date):
+            return
+
         try:
             file_links = await extract_links_from_file(
                 client=client,
@@ -373,9 +414,11 @@ async def process_message(
 
                 platform, link_chat_type = classified
 
+                # ✅ WhatsApp 60 days restriction
                 if _should_skip_whatsapp_by_date(message.date, platform):
                     continue
 
+                # ✅ Telegram message link restriction
                 if _should_skip_tg_message_link(message.chat_id, platform):
                     continue
 
