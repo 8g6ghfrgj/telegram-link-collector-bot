@@ -7,7 +7,6 @@ from telethon.tl.types import (
     MessageEntityUrl,
 )
 
-
 # ======================
 # Regex عام لأي رابط
 # ======================
@@ -29,7 +28,6 @@ DOMAIN_URL_REGEX = re.compile(
     re.IGNORECASE
 )
 
-
 # ======================
 # أنماط المنصات
 # ======================
@@ -49,23 +47,12 @@ PLATFORM_PATTERNS = {
 
 def _normalize_url(u: str) -> str:
     """
-    توحيد الرابط:
-    - لو بدأ بـ www. => https://www...
-    - لو دومين بدون scheme => https://
+    ✅ لا تعدّل الرابط نهائياً
+    فقط إزالة المسافات من البداية والنهاية
     """
     if not u:
         return u
-
-    u = u.strip()
-
-    if u.startswith("www."):
-        return "https://" + u
-
-    if not u.startswith("http://") and not u.startswith("https://"):
-        if "." in u and " " not in u:
-            return "https://" + u
-
-    return u
+    return u.strip()
 
 
 # ======================
@@ -145,15 +132,21 @@ def classify_platform(url: str) -> str:
 # =========================================================
 
 # -------- Telegram --------
+
+# روابط دخول مجموعات
 TG_GROUP_REGEX = re.compile(r"https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+", re.I)
 
 # قناة/مجموعة عامة
-TG_CHANNEL_REGEX = re.compile(r"https?://t\.me/[A-Za-z0-9_]+", re.I)
+TG_CHANNEL_REGEX = re.compile(r"https?://t\.me/[A-Za-z0-9_]+$", re.I)
 
-# ✅ NEW: Telegram Message Link (عام + خاص)
+# روابط رسائل
 # - https://t.me/name/123
 # - https://t.me/c/123456789/55
 TG_MESSAGE_REGEX = re.compile(r"https?://t\.me/(?:c/\d+|[A-Za-z0-9_]+)/\d+", re.I)
+
+# ✅ NEW: addlist
+# مثال: https://t.me/addlist/w-kW9VL73iBlODNk
+TG_ADDLIST_REGEX = re.compile(r"https?://t\.me/addlist/[A-Za-z0-9_-]+", re.I)
 
 # -------- WhatsApp --------
 WA_GROUP_REGEX = re.compile(r"https?://chat\.whatsapp\.com/[A-Za-z0-9]+", re.I)
@@ -173,20 +166,24 @@ def filter_and_classify_link(url: str):
     # ===== Telegram =====
     if "t.me" in url:
 
+        # ✅ addlist
+        if TG_ADDLIST_REGEX.match(url):
+            return ("telegram", "addlist")
+
         # ✅ رابط رسالة
         if TG_MESSAGE_REGEX.match(url):
-            # نرجعه كمنصة مستقلة عشان نقدر نطبق عليه "واحد فقط لكل مجموعة"
+            # منصة مستقلة حتى نقدر نطبق "واحد فقط لكل مجموعة" في collector.py
             return ("telegram_message", "message")
 
         # ✅ رابط دخول مجموعة
         if TG_GROUP_REGEX.match(url):
             return ("telegram", "group")
 
-        # ✅ قناة / مجموعة عامة
+        # ✅ قناة / مجموعة عامة (username only)
         if TG_CHANNEL_REGEX.match(url):
             return ("telegram", "channel")
 
-        # ❌ حساب شخص
+        # ❌ أي شيء غير ذلك (غالباً حساب شخص أو رابط غير مطلوب)
         return None
 
     # ===== WhatsApp =====
