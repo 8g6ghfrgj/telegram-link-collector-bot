@@ -65,7 +65,7 @@ def extract_links_from_message(message: Message) -> List[str]:
     - نص الرسالة
     - الروابط المخفية داخل entities (TextUrl)
     - روابط بدون https
-    - أزرار Inline (اضغط/مشبك)
+    - أزرار Inline (اضغط/مشبك) ✅ بشكل آمن بدون كراش
     """
     links: Set[str] = set()
 
@@ -90,7 +90,6 @@ def extract_links_from_message(message: Message) -> List[str]:
     # 4) الروابط المخفية داخل entities
     if getattr(message, "entities", None) and text:
         for ent in message.entities:
-
             # رابط مخفي: "اضغط هنا" والرابط داخلها
             if isinstance(ent, MessageEntityTextUrl):
                 if getattr(ent, "url", None):
@@ -106,12 +105,23 @@ def extract_links_from_message(message: Message) -> List[str]:
                 except Exception:
                     pass
 
-    # 5) أزرار Inline buttons
-    if message.reply_markup:
-        for row in message.reply_markup.rows:
-            for button in row.buttons:
-                if hasattr(button, "url") and button.url:
-                    links.add(_normalize_url(button.url))
+    # 5) ✅ أزرار Inline buttons (آمن)
+    try:
+        rm = getattr(message, "reply_markup", None)
+        if rm:
+            rows = getattr(rm, "rows", None)
+            if rows:
+                for row in rows:
+                    buttons = getattr(row, "buttons", None)
+                    if not buttons:
+                        continue
+                    for button in buttons:
+                        url = getattr(button, "url", None)
+                        if url:
+                            links.add(_normalize_url(url))
+    except Exception:
+        # ✅ ممنوع انهيار البوت بسبب زر أو ReplyMarkup غريب
+        pass
 
     return list(links)
 
@@ -136,7 +146,7 @@ def classify_platform(url: str) -> str:
 # روابط دخول مجموعات
 TG_GROUP_REGEX = re.compile(r"https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+", re.I)
 
-# قناة/مجموعة عامة
+# قناة/مجموعة عامة (username only)
 TG_CHANNEL_REGEX = re.compile(r"https?://t\.me/[A-Za-z0-9_]+$", re.I)
 
 # روابط رسائل
@@ -144,7 +154,7 @@ TG_CHANNEL_REGEX = re.compile(r"https?://t\.me/[A-Za-z0-9_]+$", re.I)
 # - https://t.me/c/123456789/55
 TG_MESSAGE_REGEX = re.compile(r"https?://t\.me/(?:c/\d+|[A-Za-z0-9_]+)/\d+", re.I)
 
-# ✅ NEW: addlist
+# ✅ addlist
 # مثال: https://t.me/addlist/w-kW9VL73iBlODNk
 TG_ADDLIST_REGEX = re.compile(r"https?://t\.me/addlist/[A-Za-z0-9_-]+", re.I)
 
@@ -179,7 +189,7 @@ def filter_and_classify_link(url: str):
         if TG_GROUP_REGEX.match(url):
             return ("telegram", "group")
 
-        # ✅ قناة / مجموعة عامة (username only)
+        # ✅ قناة / مجموعة عامة
         if TG_CHANNEL_REGEX.match(url):
             return ("telegram", "channel")
 
