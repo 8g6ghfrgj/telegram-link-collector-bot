@@ -31,9 +31,8 @@ from collector import (
 )
 from database import (
     init_db,
-    export_links,
-    get_links_by_platform_and_type,
-    create_backup_zip,
+    save_admin_target,
+    get_admin_target,
 )
 
 # ======================
@@ -42,13 +41,6 @@ from database import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ======================
-# Constants
-# ======================
-
-PAGE_SIZE = 20
-
 
 # ======================
 # Keyboards
@@ -61,63 +53,16 @@ def main_keyboard():
         [InlineKeyboardButton("⚠️ الحسابات المعطلة", callback_data="list_inactive_accounts")],
         [InlineKeyboardButton("▶️ بدء الجمع", callback_data="start_collect")],
         [InlineKeyboardButton("⏹ إيقاف الجمع", callback_data="stop_collect")],
-        [InlineKeyboardButton("📊 عرض الروابط", callback_data="view_links")],
-        [InlineKeyboardButton("📤 تصدير الروابط", callback_data="export_links")],
-        [InlineKeyboardButton("📦 نسخة احتياطية الآن", callback_data="backup_now")],
+        [InlineKeyboardButton("📞 تعيين قناة روابط واتساب", callback_data="set_target:whatsapp")],
+        [InlineKeyboardButton("📨 تعيين قناة روابط تليجرام", callback_data="set_target:telegram")],
     ])
 
 
 def collect_choice_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📞 بدء تجميع روابط واتساب", callback_data="collect:whatsapp")],
-        [InlineKeyboardButton("📨 بدء تجميع روابط تيليجرام", callback_data="collect:telegram")],
+        [InlineKeyboardButton("📞 واتساب فقط", callback_data="collect:whatsapp")],
+        [InlineKeyboardButton("📨 تليجرام فقط", callback_data="collect:telegram")],
     ])
-
-
-def platforms_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📨 تيليجرام", callback_data="choose:telegram")],
-        [InlineKeyboardButton("📞 واتساب", callback_data="choose:whatsapp")],
-    ])
-
-
-def telegram_types_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📢 القنوات", callback_data="links:telegram:channel:0"),
-            InlineKeyboardButton("👥 المجموعات", callback_data="links:telegram:group:0"),
-        ]
-    ])
-
-
-def whatsapp_types_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("👥 مجموعات واتساب", callback_data="links:whatsapp:group:0"),
-        ]
-    ])
-
-
-def pagination_keyboard(platform, chat_type, page):
-    buttons = []
-
-    if page > 0:
-        buttons.append(
-            InlineKeyboardButton(
-                "⬅️ السابق",
-                callback_data=f"links:{platform}:{chat_type}:{page - 1}"
-            )
-        )
-
-    buttons.append(
-        InlineKeyboardButton(
-            "➡️ التالي",
-            callback_data=f"links:{platform}:{chat_type}:{page + 1}"
-        )
-    )
-
-    return InlineKeyboardMarkup([buttons])
-
 
 # ======================
 # Commands
@@ -125,30 +70,14 @@ def pagination_keyboard(platform, chat_type, page):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Link Collector Bot*\n\nاختر من القائمة:",
+        "🤖 *Link Collector Bot*\n\n"
+        "• لكل مشرف قناة خاصة به\n"
+        "• القناة = قاعدة البيانات\n"
+        "• لا يوجد تكرار روابط\n\n"
+        "اختر من القائمة:",
         reply_markup=main_keyboard(),
         parse_mode="Markdown"
     )
-
-
-# ======================
-# Backup Helper
-# ======================
-
-async def _send_backup_to_user(query):
-    backup_path = create_backup_zip(max_keep=15)
-
-    if not backup_path or not os.path.exists(backup_path):
-        await query.message.reply_text("❌ تعذر إنشاء النسخة الاحتياطية.")
-        return
-
-    with open(backup_path, "rb") as f:
-        await query.message.reply_document(
-            document=f,
-            filename=os.path.basename(backup_path),
-            caption="✅ نسخة احتياطية"
-        )
-
 
 # ======================
 # Callbacks
@@ -158,6 +87,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    admin_id = query.from_user.id
 
     # ➕ إضافة حساب
     if data == "add_account":
@@ -214,146 +144,80 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("disable_account:"):
-        session_id = int(data.split(":")[1])
-        disable_session(session_id)
+        disable_session(int(data.split(":")[1]))
         await query.message.reply_text("✅ تم تعطيل الحساب.")
 
     elif data.startswith("enable_account:"):
-        session_id = int(data.split(":")[1])
-        enable_session(session_id)
+        enable_session(int(data.split(":")[1]))
         await query.message.reply_text("✅ تم تفعيل الحساب.")
 
     elif data.startswith("delete_account:"):
-        session_id = int(data.split(":")[1])
-        delete_session(session_id)
+        delete_session(int(data.split(":")[1]))
         await query.message.reply_text("🗑 تم حذف الحساب.")
 
-    # ▶️ بدء الجمع → اختيار المنصة
+    # 🎯 تعيين قناة كمخزن
+    elif data.startswith("set_target:"):
+        link_type = data.split(":")[1]
+        context.user_data["awaiting_target"] = link_type
+        await query.message.reply_text(
+            f"📥 أرسل رابط القناة أو القروب لحفظ روابط {link_type.upper()}:"
+        )
+
+    # ▶️ بدء الجمع
     elif data == "start_collect":
         if is_collecting():
             await query.message.reply_text("⏳ الجمع يعمل بالفعل.")
             return
 
         await query.message.reply_text(
-            "📥 اختر المنصة التي تريد تجميع روابطها:",
+            "اختر نوع الروابط:",
             reply_markup=collect_choice_keyboard()
         )
 
-    # 📞📨 بدء التجميع حسب المنصة
     elif data.startswith("collect:"):
         if is_collecting():
             await query.message.reply_text("⏳ الجمع يعمل بالفعل.")
             return
 
         platform = data.split(":")[1]
-
         asyncio.create_task(start_collection(platform=platform))
-
-        if platform == "whatsapp":
-            await query.message.reply_text("📞 جاري تجميع روابط واتساب فقط...")
-        elif platform == "telegram":
-            await query.message.reply_text("📨 جاري تجميع روابط تيليجرام فقط...")
+        await query.message.reply_text(f"▶️ بدأ تجميع روابط {platform.upper()}")
 
     # ⏹ إيقاف الجمع
     elif data == "stop_collect":
         stop_collection()
         await query.message.reply_text("⏹ تم إيقاف الجمع.")
 
-        try:
-            await _send_backup_to_user(query)
-        except Exception as e:
-            logger.error(f"Backup error: {e}")
-
-    # 📦 نسخة احتياطية
-    elif data == "backup_now":
-        await query.message.reply_text("⏳ إنشاء نسخة احتياطية...")
-        await _send_backup_to_user(query)
-
-    # 📊 عرض الروابط
-    elif data == "view_links":
-        await query.message.reply_text(
-            "📊 اختر المنصة:",
-            reply_markup=platforms_keyboard()
-        )
-
-    elif data == "choose:telegram":
-        await query.message.reply_text(
-            "📨 روابط تيليجرام:",
-            reply_markup=telegram_types_keyboard()
-        )
-
-    elif data == "choose:whatsapp":
-        await query.message.reply_text(
-            "📞 روابط واتساب:",
-            reply_markup=whatsapp_types_keyboard()
-        )
-
-    elif data.startswith("links:"):
-        _, platform, chat_type, page = data.split(":")
-        page = int(page)
-
-        links = get_links_by_platform_and_type(
-            platform=platform,
-            chat_type=chat_type,
-            limit=PAGE_SIZE,
-            offset=page * PAGE_SIZE
-        )
-
-        if not links and page == 0:
-            await query.message.reply_text("❌ لا توجد روابط.")
-            return
-
-        text = f"🔗 {platform.upper()} / {chat_type.upper()} — صفحة {page+1}\n\n"
-
-        for url, date in links:
-            year = date[:4] if date else "----"
-            text += f"[{year}] {url}\n"
-
-        await query.message.reply_text(
-            text[:4000],
-            reply_markup=pagination_keyboard(platform, chat_type, page)
-        )
-
-    # 📤 تصدير
-    elif data == "export_links":
-        await query.message.reply_text(
-            "📤 اختر:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📄 الكل", callback_data="export:all")],
-                [InlineKeyboardButton("📄 تيليجرام", callback_data="export:telegram")],
-                [InlineKeyboardButton("📄 واتساب", callback_data="export:whatsapp")],
-            ])
-        )
-
-    elif data.startswith("export:"):
-        platform = data.split(":")[1]
-        path = export_links(platform)
-
-        if not path or not os.path.exists(path):
-            await query.message.reply_text("❌ لا توجد روابط.")
-            return
-
-        with open(path, "rb") as f:
-            await query.message.reply_document(
-                document=f,
-                filename=os.path.basename(path)
-            )
-
-
 # ======================
 # Messages
 # ======================
 
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.message.from_user.id
+    text = update.message.text.strip()
+
+    # إضافة Session
     if context.user_data.get("awaiting_session"):
         try:
-            add_session(update.message.text.strip())
+            add_session(text)
             await update.message.reply_text("✅ تم إضافة الحساب.")
         except Exception as e:
             await update.message.reply_text(f"❌ {e}")
         finally:
             context.user_data["awaiting_session"] = False
+        return
 
+    # تعيين قناة كمخزن
+    if context.user_data.get("awaiting_target"):
+        link_type = context.user_data["awaiting_target"]
+        save_admin_target(admin_id, link_type, text)
+        context.user_data["awaiting_target"] = None
+
+        await update.message.reply_text(
+            f"✅ تم حفظ قناة {link_type.upper()} بنجاح.\n"
+            "سيتم استخدامها كقاعدة بيانات ومنع التكرار."
+        )
+        return
 
 # ======================
 # Main
